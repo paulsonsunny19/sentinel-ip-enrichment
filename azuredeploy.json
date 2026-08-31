@@ -3,8 +3,8 @@
   "contentVersion": "1.0.0.0",
   "metadata": {
     "title": "Enrich IP entities and post a Sentinel incident comment",
-    "description": "STAT-style IP enrichment built on sources that are free for business use. For every IP entity on the incident it collects geolocation and ASN from Sentinel's own enrichment API, RIR registration via RDAP, Tor exit-node membership, optional AbuseIPDB reputation, Entra sign-in context (device trust, OS, browser, user agent, risk), and workspace-native insights (threat intel matches, sightings across sign-in/activity/network tables, prior alerts), then writes one formatted HTML comment back to the incident.",
-    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: a free AbuseIPDB API key.",
+    "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts, then posts one formatted incident comment.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, and appropriately licensed VirusTotal or Shodan access.",
     "postDeployment": [
       "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
       "Grant the same identity 'Log Analytics Reader' on the workspace.",
@@ -80,6 +80,27 @@
       "defaultValue": "",
       "metadata": {
         "description": "OPTIONAL and OFF by default. VirusTotal's free public API forbids use in business workflows, so supply a Premium key or leave this blank."
+      }
+    },
+    "GreyNoiseApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional GreyNoise Community API key. Leave blank to disable and avoid unauthenticated rate limits."
+      }
+    },
+    "EnableShodanInternetDB": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable only when the client has Shodan Enterprise permission for commercial InternetDB use. Disabled by default."
+      }
+    },
+    "IPContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "IPContext",
+      "metadata": {
+        "description": "Optional Sentinel watchlist alias. Use SearchKey for the IP and recommended columns Classification, Owner, Description, RiskOverride and ValidUntil. Set blank to disable."
       }
     }
   },
@@ -163,6 +184,18 @@
               "type": "SecureString",
               "defaultValue": ""
             },
+            "GreyNoiseApiKey": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "EnableShodanInternetDB": {
+              "type": "Bool",
+              "defaultValue": false
+            },
+            "IPContextWatchlistAlias": {
+              "type": "String",
+              "defaultValue": "IPContext"
+            },
             "WorkspaceSubscriptionId": {
               "type": "String"
             },
@@ -237,9 +270,60 @@
                 ]
               }
             },
-            "Init_AbuseScore": {
+            "Init_GreyNoiseHtml": {
               "runAfter": {
                 "Init_VTHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "GreyNoiseHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_GreyNoiseClassification": {
+              "runAfter": {
+                "Init_GreyNoiseHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "GreyNoiseClassification",
+                    "type": "string",
+                    "value": "unknown"
+                  }
+                ]
+              }
+            },
+            "Init_ShodanHtml": {
+              "runAfter": {
+                "Init_GreyNoiseClassification": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "ShodanHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_AbuseScore": {
+              "runAfter": {
+                "Init_ShodanHtml": [
                   "Succeeded"
                 ]
               },
@@ -363,9 +447,45 @@
                     "value": ""
                   }
                 },
-                "Reset_AbuseScore": {
+                "Reset_GreyNoiseHtml": {
                   "runAfter": {
                     "Reset_VTHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "GreyNoiseHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_GreyNoiseClassification": {
+                  "runAfter": {
+                    "Reset_GreyNoiseHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "GreyNoiseClassification",
+                    "value": "unknown"
+                  }
+                },
+                "Reset_ShodanHtml": {
+                  "runAfter": {
+                    "Reset_GreyNoiseClassification": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "ShodanHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_AbuseScore": {
+                  "runAfter": {
+                    "Reset_ShodanHtml": [
                       "Succeeded"
                     ]
                   },
@@ -507,6 +627,13 @@
                           "Key": "@parameters('AbuseIPDBApiKey')",
                           "Accept": "application/json"
                         }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
                       }
                     },
                     "Set_AbuseScore": {
@@ -532,7 +659,7 @@
                       "type": "SetVariable",
                       "inputs": {
                         "name": "AbuseHtml",
-                        "value": "@if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AbuseIPDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Confidence of abuse: <b>', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['abuseConfidenceScore'], 0)), '%</b>', ' &nbsp;|&nbsp; ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['totalReports'], 0)), ' report(s) from ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['numDistinctUsers'], 0)), ' reporter(s)', ' &nbsp;|&nbsp; usage: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['usageType'], 'n/a')), ' &nbsp;|&nbsp; domain: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['domain'], 'n/a')), ' &nbsp;|&nbsp; Tor: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['isTor'], false)), ' &nbsp;|&nbsp; last report: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['lastReportedAt'], 'never')), '</td></tr>'), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AbuseIPDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup failed</td></tr>')"
+                        "value": "@if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AbuseIPDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Confidence of abuse: <b>', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['abuseConfidenceScore'], 0)), '%</b>',' &nbsp;|&nbsp; ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['totalReports'], 0)), ' report(s) from ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['numDistinctUsers'], 0)), ' reporter(s)',' &nbsp;|&nbsp; usage: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['usageType'], 'n/a')),' &nbsp;|&nbsp; domain: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['domain'], 'n/a')),' &nbsp;|&nbsp; Tor: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['isTor'], false)),' &nbsp;|&nbsp; last report: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['lastReportedAt'], 'never')), '</td></tr>'), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AbuseIPDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup failed or rate limited</td></tr>')"
                       }
                     }
                   },
@@ -569,6 +696,13 @@
                         "headers": {
                           "x-apikey": "@parameters('VirusTotalApiKey')"
                         }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
                       }
                     },
                     "Set_VTMalicious": {
@@ -594,7 +728,125 @@
                       "type": "SetVariable",
                       "inputs": {
                         "name": "VTHtml",
-                        "value": "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">VirusTotal</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['malicious'], 0)), '</b> malicious / ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['suspicious'], 0)), ' suspicious / ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['harmless'], 0)), ' harmless', ' &nbsp;|&nbsp; community reputation: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['reputation'], 0)), ' &nbsp;|&nbsp; network: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['network'], 'n/a')), ' &nbsp;|&nbsp; owner: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['as_owner'], 'n/a')), ' &nbsp;|&nbsp; <a href=\"https://www.virustotal.com/gui/ip-address/', items('For_each_IP_entity')?['Address'], '\">open in VirusTotal</a></td></tr>'), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">VirusTotal</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup failed</td></tr>')"
+                        "value": "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">VirusTotal</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['malicious'], 0)), '</b> malicious / ',string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['suspicious'], 0)), ' suspicious / ',string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['harmless'], 0)), ' harmless',' &nbsp;|&nbsp; community reputation: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['reputation'], 0)),' &nbsp;|&nbsp; network: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['network'], 'n/a')),' &nbsp;|&nbsp; owner: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['as_owner'], 'n/a')),' &nbsp;|&nbsp; <a href=\"https://www.virustotal.com/gui/ip-address/', items('For_each_IP_entity')?['Address'], '\">open in VirusTotal</a></td></tr>'), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">VirusTotal</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup failed or rate limited</td></tr>')"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Condition_GreyNoise_key_present": {
+                  "runAfter": {
+                    "Condition_VirusTotal_key_present": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('GreyNoiseApiKey')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_GreyNoise": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "https://api.greynoise.io/v3/community/@{items('For_each_IP_entity')?['Address']}",
+                        "headers": {
+                          "key": "@parameters('GreyNoiseApiKey')",
+                          "Accept": "application/json"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_GreyNoiseClassification": {
+                      "runAfter": {
+                        "HTTP_GreyNoise": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "GreyNoiseClassification",
+                        "value": "@if(equals(outputs('HTTP_GreyNoise')?['statusCode'], 200), toLower(string(coalesce(body('HTTP_GreyNoise')?['classification'], 'unknown'))), 'unknown')"
+                      }
+                    },
+                    "Set_GreyNoiseHtml": {
+                      "runAfter": {
+                        "Set_GreyNoiseClassification": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "GreyNoiseHtml",
+                        "value": "@if(equals(outputs('HTTP_GreyNoise')?['statusCode'], 200), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">GreyNoise Community</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">classification: <b>', string(coalesce(body('HTTP_GreyNoise')?['classification'], 'unknown')), '</b>', ' &nbsp;|&nbsp; internet scanner noise: ', string(coalesce(body('HTTP_GreyNoise')?['noise'], false)), ' &nbsp;|&nbsp; RIOT service: ', string(coalesce(body('HTTP_GreyNoise')?['riot'], false)), ' &nbsp;|&nbsp; actor/service: ', string(coalesce(body('HTTP_GreyNoise')?['name'], 'n/a')), ' &nbsp;|&nbsp; last seen: ', string(coalesce(body('HTTP_GreyNoise')?['last_seen'], 'n/a')), ' &nbsp;|&nbsp; <a href=\"', string(coalesce(body('HTTP_GreyNoise')?['link'], 'https://viz.greynoise.io/')), '\">open in GreyNoise</a></td></tr>'), if(equals(outputs('HTTP_GreyNoise')?['statusCode'], 404), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">GreyNoise Community</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">not observed in the Community dataset</td></tr>', '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">GreyNoise Community</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup unavailable or rate limited</td></tr>'))"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Condition_Shodan_licensed": {
+                  "runAfter": {
+                    "Condition_GreyNoise_key_present": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableShodanInternetDB')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Shodan_InternetDB": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "https://internetdb.shodan.io/@{items('For_each_IP_entity')?['Address']}",
+                        "headers": {
+                          "Accept": "application/json"
+                        }
+                      }
+                    },
+                    "Set_ShodanHtml": {
+                      "runAfter": {
+                        "HTTP_Shodan_InternetDB": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "ShodanHtml",
+                        "value": "@if(equals(outputs('HTTP_Shodan_InternetDB')?['statusCode'], 200), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Shodan InternetDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">ports: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['ports'], json('[]'))), ' &nbsp;|&nbsp; tags: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['tags'], json('[]'))), ' &nbsp;|&nbsp; hostnames: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['hostnames'], json('[]'))), ' &nbsp;|&nbsp; vulnerabilities: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['vulns'], json('[]'))), ' &nbsp;|&nbsp; CPEs: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['cpes'], json('[]'))), ' &nbsp;|&nbsp; <a href=\"https://www.shodan.io/host/', items('For_each_IP_entity')?['Address'], '\">open in Shodan</a></td></tr>'), if(equals(outputs('HTTP_Shodan_InternetDB')?['statusCode'], 404), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Shodan InternetDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">no InternetDB record</td></tr>', '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Shodan InternetDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup unavailable</td></tr>'))"
                       }
                     }
                   },
@@ -604,7 +856,7 @@
                 },
                 "Run_KQL_signin_context": {
                   "runAfter": {
-                    "Condition_VirusTotal_key_present": [
+                    "Condition_Shodan_licensed": [
                       "Succeeded"
                     ]
                   },
@@ -616,7 +868,7 @@
                       }
                     },
                     "method": "post",
-                    "body": "let ip = '@{items('For_each_IP_entity')?['Address']}';\nlet look = @{parameters('LookbackDays')}d;\nlet hist = 90d;\nlet priorCount = toscalar(SigninLogs | where TimeGenerated between (ago(hist) .. ago(look)) | where IPAddress == ip | summarize count());\nSigninLogs\n| where TimeGenerated > ago(look)\n| where IPAddress == ip\n| summarize arg_max(TimeGenerated, *)\n| extend D = parse_json(tostring(DeviceDetail)), L = parse_json(tostring(LocationDetails)), N = tostring(NetworkLocationDetails)\n| project\n    SignInUser = tostring(UserPrincipalName),\n    SignInTime = format_datetime(TimeGenerated, 'yyyy-MM-dd HH:mm:ss'),\n    SignInApp = tostring(AppDisplayName),\n    SignInResult = strcat(tostring(ResultType), iff(isnotempty(ResultDescription), strcat(' - ', ResultDescription), '')),\n    CountryCode = iff(isempty(tostring(L.countryOrRegion)), 'Unknown', tostring(L.countryOrRegion)),\n    CityState = strcat(iff(isempty(tostring(L.city)), 'Unknown', tostring(L.city)), ', ', tostring(L.state)),\n    TrustedLocation = case(N has 'trustedNamedLocation', 'Trusted named location',\n                           N has 'namedLocation', 'Named location (not trusted)',\n                           'Unknown'),\n    KnownIP = iff(priorCount > 0, strcat('Yes - ', priorCount, ' prior sign-ins in the previous 90d'), 'No - first observed in this window'),\n    IPAddressStatus = case(priorCount > 0 and N has 'trustedNamedLocation', 'Known and trusted IP address',\n                           priorCount > 0, 'Known IP address',\n                           'Unknown IP address'),\n    DeviceTrust = iff(isempty(tostring(D.trustType)), 'Unregistered / unknown', tostring(D.trustType)),\n    DeviceName = iff(isempty(tostring(D.displayName)), 'n/a', tostring(D.displayName)),\n    DeviceId = iff(isempty(tostring(D.deviceId)), 'n/a', tostring(D.deviceId)),\n    DeviceCompliant = tostring(D.isCompliant),\n    DeviceManaged = tostring(D.isManaged),\n    OperatingSystem = iff(isempty(tostring(D.operatingSystem)), 'n/a', tostring(D.operatingSystem)),\n    Browser = iff(isempty(tostring(D.browser)), 'n/a', tostring(D.browser)),\n    AgentString = tostring(column_ifexists('UserAgent', '')),\n    RiskLevel = tostring(RiskLevelDuringSignIn),\n    RiskState = tostring(RiskState),\n    RiskDetail = tostring(RiskDetail),\n    RiskEvents = tostring(column_ifexists('RiskEventTypes_V2', dynamic([]))),\n    ConditionalAccess = tostring(ConditionalAccessStatus),\n    AuthRequirement = tostring(AuthenticationRequirement)\n| take 1",
+                    "body": "let ip = '@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}';\nlet look = @{parameters('LookbackDays')}d;\nlet hist = 90d;\nlet priorCount = toscalar(SigninLogs | where TimeGenerated between (ago(hist) .. ago(look)) | where IPAddress == ip | summarize count());\nSigninLogs\n| where TimeGenerated > ago(look)\n| where IPAddress == ip\n| summarize arg_max(TimeGenerated, *)\n| extend D = parse_json(tostring(DeviceDetail)), L = parse_json(tostring(LocationDetails)), N = tostring(NetworkLocationDetails)\n| project\n    SignInUser = tostring(UserPrincipalName),\n    SignInTime = format_datetime(TimeGenerated, 'yyyy-MM-dd HH:mm:ss'),\n    SignInApp = tostring(AppDisplayName),\n    SignInResult = strcat(tostring(ResultType), iff(isnotempty(ResultDescription), strcat(' - ', ResultDescription), '')),\n    CountryCode = iff(isempty(tostring(L.countryOrRegion)), 'Unknown', tostring(L.countryOrRegion)),\n    CityState = strcat(iff(isempty(tostring(L.city)), 'Unknown', tostring(L.city)), ', ', tostring(L.state)),\n    TrustedLocation = case(N has 'trustedNamedLocation', 'Trusted named location',\n                           N has 'namedLocation', 'Named location (not trusted)',\n                           'Unknown'),\n    KnownIP = iff(priorCount > 0, strcat('Yes - ', priorCount, ' prior sign-ins in the previous 90d'), 'No - first observed in this window'),\n    IPAddressStatus = case(priorCount > 0 and N has 'trustedNamedLocation', 'Known and trusted IP address',\n                           priorCount > 0, 'Known IP address',\n                           'Unknown IP address'),\n    DeviceTrust = iff(isempty(tostring(D.trustType)), 'Unregistered / unknown', tostring(D.trustType)),\n    DeviceName = iff(isempty(tostring(D.displayName)), 'n/a', tostring(D.displayName)),\n    DeviceId = iff(isempty(tostring(D.deviceId)), 'n/a', tostring(D.deviceId)),\n    DeviceCompliant = tostring(D.isCompliant),\n    DeviceManaged = tostring(D.isManaged),\n    OperatingSystem = iff(isempty(tostring(D.operatingSystem)), 'n/a', tostring(D.operatingSystem)),\n    Browser = iff(isempty(tostring(D.browser)), 'n/a', tostring(D.browser)),\n    AgentString = tostring(column_ifexists('UserAgent', '')),\n    RiskLevel = tostring(RiskLevelDuringSignIn),\n    RiskState = tostring(RiskState),\n    RiskDetail = tostring(RiskDetail),\n    RiskEvents = tostring(column_ifexists('RiskEventTypes_V2', dynamic([]))),\n    ConditionalAccess = tostring(ConditionalAccessStatus),\n    AuthRequirement = tostring(AuthenticationRequirement)\n| take 1",
                     "path": "/queryData",
                     "queries": {
                       "subscriptions": "@parameters('WorkspaceSubscriptionId')",
@@ -694,7 +946,34 @@
                       }
                     },
                     "method": "post",
-                    "body": "let ip = '@{items('For_each_IP_entity')?['Address']}';\nlet look = @{parameters('LookbackDays')}d;\nlet TI = union isfuzzy=true\n(ThreatIntelligenceIndicator\n | where TimeGenerated > ago(30d)\n | where NetworkIP == ip or NetworkSourceIP == ip or NetworkDestinationIP == ip\n | where Active == true\n | summarize arg_max(TimeGenerated, *) by IndicatorId\n | project Source = 'Threat Intel', Detail = strcat('TI match - ', coalesce(Description, 'indicator'), ' | type: ', coalesce(ThreatType, 'n/a'), ' | confidence: ', tostring(ConfidenceScore), ' | feed: ', coalesce(SourceSystem, 'n/a')), Last = TimeGenerated),\n(ThreatIntelIndicators\n | where TimeGenerated > ago(30d)\n | where ObservableValue == ip\n | summarize arg_max(TimeGenerated, *) by Id\n | project Source = 'Threat Intel', Detail = strcat('TI match - ', tostring(Data.description), ' | confidence: ', tostring(Confidence)), Last = TimeGenerated);\nlet Sightings = union isfuzzy=true\n(SigninLogs | where TimeGenerated > ago(look) | where IPAddress == ip\n | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'), Users = make_set(UserPrincipalName, 8), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'SigninLogs', Detail = strcat(C, ' sign-ins, ', U, ' user(s), ', F, ' failed | ', tostring(Users)), Last),\n(AADNonInteractiveUserSignInLogs | where TimeGenerated > ago(look) | where IPAddress == ip\n | summarize C = count(), U = dcount(UserPrincipalName), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s)'), Last),\n(AzureActivity | where TimeGenerated > ago(look) | where CallerIpAddress == ip\n | summarize C = count(), Callers = make_set(Caller, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'AzureActivity', Detail = strcat(C, ' operations | callers: ', tostring(Callers)), Last),\n(OfficeActivity | where TimeGenerated > ago(look) | where ClientIP has ip\n | summarize C = count(), U = make_set(UserId, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'OfficeActivity', Detail = strcat(C, ' events | users: ', tostring(U)), Last),\n(SecurityEvent | where TimeGenerated > ago(look) | where IpAddress == ip\n | summarize C = count(), Hosts = make_set(Computer, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'SecurityEvent', Detail = strcat(C, ' events | hosts: ', tostring(Hosts)), Last),\n(CommonSecurityLog | where TimeGenerated > ago(look) | where SourceIP == ip or DestinationIP == ip\n | summarize C = count(), Dev = dcount(DeviceName), Act = make_set(DeviceAction, 5), Ports = make_set(DestinationPort, 8), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'CommonSecurityLog', Detail = strcat(C, ' events across ', Dev, ' device(s) | actions: ', tostring(Act), ' | dst ports: ', tostring(Ports)), Last),\n(DeviceNetworkEvents | where TimeGenerated > ago(look) | where RemoteIP == ip\n | summarize C = count(), Dev = make_set(DeviceName, 5), Proc = make_set(InitiatingProcessFileName, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'DeviceNetworkEvents', Detail = strcat(C, ' connections | devices: ', tostring(Dev), ' | processes: ', tostring(Proc)), Last),\n(VMConnection | where TimeGenerated > ago(look) | where RemoteIp == ip\n | summarize C = count(), Dev = make_set(Computer, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'VMConnection', Detail = strcat(C, ' connections | hosts: ', tostring(Dev)), Last),\n(W3CIISLog | where TimeGenerated > ago(look) | where cIP == ip\n | summarize C = count(), Sites = make_set(sSiteName, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'W3CIISLog', Detail = strcat(C, ' requests | sites: ', tostring(Sites)), Last),\n(AWSCloudTrail | where TimeGenerated > ago(look) | where SourceIpAddress == ip\n | summarize C = count(), Users = make_set(UserIdentityArn, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'AWSCloudTrail', Detail = strcat(C, ' API calls | identities: ', tostring(Users)), Last);\nlet Alerts = union isfuzzy=true\n(SecurityAlert | where TimeGenerated > ago(30d) | where Entities has ip\n | summarize C = count(), Names = make_set(AlertName, 5), Sev = make_set(AlertSeverity, 4), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'Prior alerts', Detail = strcat(C, ' alert(s) in 30d | ', tostring(Names), ' | severity: ', tostring(Sev)), Last);\nunion isfuzzy=true TI, Sightings, Alerts\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
+                    "body": "let ip = '@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}';\nlet look = @{parameters('LookbackDays')}d;\nlet TI = union isfuzzy=true\n(ThreatIntelligenceIndicator\n | where TimeGenerated > ago(30d)\n | where NetworkIP == ip or NetworkSourceIP == ip or NetworkDestinationIP == ip\n | where Active == true\n | summarize arg_max(TimeGenerated, *) by IndicatorId\n | project Source = 'Threat Intel', Detail = strcat('TI match - ', coalesce(Description, 'indicator'), ' | type: ', coalesce(ThreatType, 'n/a'), ' | confidence: ', tostring(ConfidenceScore), ' | feed: ', coalesce(SourceSystem, 'n/a')), Last = TimeGenerated),\n(ThreatIntelIndicators\n | where TimeGenerated > ago(30d)\n | where ObservableValue == ip\n | summarize arg_max(TimeGenerated, *) by Id\n | project Source = 'Threat Intel', Detail = strcat('TI match - ', tostring(Data.description), ' | confidence: ', tostring(Confidence)), Last = TimeGenerated);\nlet Sightings = union isfuzzy=true\n(SigninLogs | where TimeGenerated > ago(look) | where IPAddress == ip\n | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'), Users = make_set(UserPrincipalName, 8), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'SigninLogs', Detail = strcat(C, ' sign-ins, ', U, ' user(s), ', F, ' failed | ', tostring(Users)), Last),\n(AADNonInteractiveUserSignInLogs | where TimeGenerated > ago(look) | where IPAddress == ip\n | summarize C = count(), U = dcount(UserPrincipalName), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s)'), Last),\n(AzureActivity | where TimeGenerated > ago(look) | where CallerIpAddress == ip\n | summarize C = count(), Callers = make_set(Caller, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'AzureActivity', Detail = strcat(C, ' operations | callers: ', tostring(Callers)), Last),\n(OfficeActivity | where TimeGenerated > ago(look) | where ClientIP has ip\n | summarize C = count(), U = make_set(UserId, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'OfficeActivity', Detail = strcat(C, ' events | users: ', tostring(U)), Last),\n(SecurityEvent | where TimeGenerated > ago(look) | where IpAddress == ip\n | summarize C = count(), Hosts = make_set(Computer, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'SecurityEvent', Detail = strcat(C, ' events | hosts: ', tostring(Hosts)), Last),\n(CommonSecurityLog | where TimeGenerated > ago(look) | where SourceIP == ip or DestinationIP == ip\n | summarize C = count(), Dev = dcount(DeviceName), Act = make_set(DeviceAction, 5), Ports = make_set(DestinationPort, 8), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'CommonSecurityLog', Detail = strcat(C, ' events across ', Dev, ' device(s) | actions: ', tostring(Act), ' | dst ports: ', tostring(Ports)), Last),\n(DeviceNetworkEvents | where TimeGenerated > ago(look) | where RemoteIP == ip\n | summarize C = count(), Dev = make_set(DeviceName, 5), Proc = make_set(InitiatingProcessFileName, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'DeviceNetworkEvents', Detail = strcat(C, ' connections | devices: ', tostring(Dev), ' | processes: ', tostring(Proc)), Last),\n(VMConnection | where TimeGenerated > ago(look) | where RemoteIp == ip\n | summarize C = count(), Dev = make_set(Computer, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'VMConnection', Detail = strcat(C, ' connections | hosts: ', tostring(Dev)), Last),\n(W3CIISLog | where TimeGenerated > ago(look) | where cIP == ip\n | summarize C = count(), Sites = make_set(sSiteName, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'W3CIISLog', Detail = strcat(C, ' requests | sites: ', tostring(Sites)), Last),\n(AWSCloudTrail | where TimeGenerated > ago(look) | where SourceIpAddress == ip\n | summarize C = count(), Users = make_set(UserIdentityArn, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'AWSCloudTrail', Detail = strcat(C, ' API calls | identities: ', tostring(Users)), Last);\nlet Alerts = union isfuzzy=true\n(SecurityAlert | where TimeGenerated > ago(30d) | where Entities has ip\n | summarize C = count(), Names = make_set(AlertName, 5), Sev = make_set(AlertSeverity, 4), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'Prior alerts', Detail = strcat(C, ' alert(s) in 30d | ', tostring(Names), ' | severity: ', tostring(Sev)), Last);\nunion isfuzzy=true TI, Sightings, Alerts\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
+                    "path": "/queryData",
+                    "queries": {
+                      "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                      "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                      "resourcetype": "Log Analytics Workspace",
+                      "resourcename": "@parameters('WorkspaceName')",
+                      "timerange": "Set in query"
+                    }
+                  }
+                },
+                "Run_KQL_extended_context": {
+                  "runAfter": {
+                    "Run_KQL_insights": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "let ip = '@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}';\nlet watchAlias = '@{replace(parameters('IPContextWatchlistAlias'), decodeUriComponent('%27'), '')}';\nlet look = @{parameters('LookbackDays')}d;\nlet ClientContext = union isfuzzy=true\n(Watchlist\n | where isnotempty(watchAlias)\n | where WatchlistAlias == watchAlias and SearchKey == ip\n | summarize arg_max(TimeGenerated, *) by SearchKey\n | extend W = todynamic(WatchlistItem)\n | extend Classification = coalesce(tostring(W.Classification), tostring(W.Category), 'unclassified')\n | project Source = iff(tolower(Classification) in ('knownbad', 'malicious', 'block'), 'Client IP context - high', 'Client IP context'),\n           Detail = strcat('classification: ', Classification,\n                           ' | owner: ', coalesce(tostring(W.Owner), 'n/a'),\n                           ' | ', coalesce(tostring(W.Description), tostring(W.Notes), 'no description'),\n                           ' | override: ', coalesce(tostring(W.RiskOverride), 'none'),\n                           ' | valid until: ', coalesce(tostring(W.ValidUntil), 'not set')),\n           Last = coalesce(LastUpdatedTimeUTC, TimeGenerated));\nlet Ueba = union isfuzzy=true\n(BehaviorAnalytics\n | where TimeGenerated > ago(look)\n | where SourceIPAddress == ip or DestinationIPAddress == ip\n | top 5 by InvestigationPriority desc\n | project Source = iff(InvestigationPriority >= 8, 'UEBA high anomaly', 'UEBA'),\n           Detail = strcat('priority ', InvestigationPriority, '/10 | ', ActivityType, ' / ', ActionType,\n                           ' | user: ', coalesce(UserPrincipalName, UserName, 'n/a'),\n                           ' | source: ', EventSource),\n           Last = TimeGenerated);\nlet Network = union isfuzzy=true\n(_Im_NetworkSession(starttime=ago(look), endtime=now(), ipaddr_has_any_prefix=pack_array(ip))\n | where SrcIpAddr == ip or DstIpAddr == ip\n | summarize C = sum(EventCount), Devices = make_set(coalesce(SrcHostname, DstHostname, Dvc), 5),\n             Ports = make_set(DstPortNumber, 8), Actions = make_set(DvcAction, 5), Last = max(TimeGenerated)\n | where C > 0\n | project Source = 'ASIM network',\n           Detail = strcat(C, ' session(s) | devices: ', tostring(Devices),\n                           ' | destination ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last);\nlet Dns = union isfuzzy=true\n(_Im_Dns(starttime=ago(look), endtime=now(), response_has_ipv4=ip)\n | summarize C = count(), Domains = make_set(DnsQuery, 10),\n             Clients = make_set(coalesce(SrcHostname, SrcIpAddr), 5), Last = max(TimeGenerated)\n | where C > 0\n | project Source = 'ASIM DNS',\n           Detail = strcat(C, ' response(s) | domains: ', tostring(Domains),\n                           ' | clients: ', tostring(Clients)), Last);\nunion isfuzzy=true ClientContext, Ueba, Network, Dns\n| where isnotempty(Source)\n| order by Last desc\n| take 40",
                     "path": "/queryData",
                     "queries": {
                       "subscriptions": "@parameters('WorkspaceSubscriptionId')",
@@ -707,14 +986,14 @@
                 },
                 "Compose_Rows": {
                   "runAfter": {
-                    "Run_KQL_insights": [
+                    "Run_KQL_extended_context": [
                       "Succeeded",
                       "Failed",
                       "TimedOut"
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@if(equals(actions('Run_KQL_insights')?['status'], 'Succeeded'), coalesce(body('Run_KQL_insights')?['value'], json('[]')), json('[]'))"
+                  "inputs": "@union(if(equals(actions('Run_KQL_insights')?['status'], 'Succeeded'), coalesce(body('Run_KQL_insights')?['value'], json('[]')), json('[]')), if(equals(actions('Run_KQL_extended_context')?['status'], 'Succeeded'), coalesce(body('Run_KQL_extended_context')?['value'], json('[]')), json('[]')))"
                 },
                 "Filter_TI": {
                   "runAfter": {
@@ -747,7 +1026,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@if(or(greater(length(body('Filter_TI')), 0), greater(variables('VTMalicious'), 0), greaterOrEquals(variables('AbuseScore'), 50), contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'high')), 'HIGH', if(or(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), greaterOrEquals(variables('AbuseScore'), 25), equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'medium'), startsWith(string(coalesce(outputs('Compose_Signin')?['IPAddressStatus'], '')), 'Unknown')), 'MEDIUM', 'LOW'))"
+                  "inputs": "@if(or(greater(length(body('Filter_TI')), 0), greater(variables('VTMalicious'), 0), greaterOrEquals(variables('AbuseScore'), 50), contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'high')), 'HIGH', if(or(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), greaterOrEquals(variables('AbuseScore'), 25), equals(variables('GreyNoiseClassification'), 'malicious'), equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'medium'), startsWith(string(coalesce(outputs('Compose_Signin')?['IPAddressStatus'], '')), 'Unknown')), 'MEDIUM', 'LOW'))"
                 },
                 "Compose_VerdictStyle": {
                   "runAfter": {
@@ -765,7 +1044,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@concat('Signals: ', string(length(body('Filter_TI'))), ' TI match(es) &middot; AbuseIPDB ', string(variables('AbuseScore')), '% &middot; VT malicious ', string(variables('VTMalicious')), ' &middot; Tor exit: ', if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), 'yes', 'no'), ' &middot; ', string(length(outputs('Compose_Rows'))), ' workspace insight row(s)')"
+                  "inputs": "@concat('Signals: ', string(length(body('Filter_TI'))), ' TI match(es) &middot; AbuseIPDB ', string(variables('AbuseScore')), '% &middot; VT malicious ', string(variables('VTMalicious')), ' &middot; GreyNoise ', variables('GreyNoiseClassification'), ' &middot; Tor exit: ', if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), 'yes', 'no'), ' &middot; ', string(length(outputs('Compose_Rows'))), ' workspace insight row(s)')"
                 },
                 "Append_IP_block": {
                   "runAfter": {
@@ -776,7 +1055,7 @@
                   "type": "AppendToStringVariable",
                   "inputs": {
                     "name": "HtmlBody",
-                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nIP enrichment &mdash; <code>@{items('For_each_IP_entity')?['Address']}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Geolocation</b> <span style=\"font-weight:400;color:#605e5c\">(Microsoft Sentinel enrichment API &mdash; confidence 0-100 where shown)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organization'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organizationType'], '-'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">City</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['city'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['cityCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Country</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['country'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['countryCf'], '-'))})</span></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">State</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['state'], 'n/a'))} <span style=\"color:#605e5c\">(@{string(coalesce(outputs('Compose_Geo')?['stateCode'], '-'))}, cf @{string(coalesce(outputs('Compose_Geo')?['stateCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Continent</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['continent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Region</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['region'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Coordinates</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://www.bing.com/maps?cp=@{string(coalesce(outputs('Compose_Geo')?['latitude'], '0'))}~@{string(coalesce(outputs('Compose_Geo')?['longitude'], '0'))}&amp;lvl=9\">@{string(coalesce(outputs('Compose_Geo')?['latitude'], 'n/a'))}, @{string(coalesce(outputs('Compose_Geo')?['longitude'], 'n/a'))}</a></td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Network / ASN</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">ASN</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['asn'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Carrier</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['carrier'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Routing type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">RIR network</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['name'], 'n/a'))} (@{string(coalesce(outputs('Compose_RDAP')?['handle'], 'n/a'))})</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Range</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['startAddress'], 'n/a'))} &ndash; @{string(coalesce(outputs('Compose_RDAP')?['endAddress'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Allocation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['type'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Tor exit node</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), '<b style=\"color:#a4262c\">Yes &mdash; known Tor exit node</b>', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hosting / datacentre</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), '<b style=\"color:#a4262c\">Yes</b>', 'No')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Mobile / wireless</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'mobile'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'wireless'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'cellular')), 'Yes', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Geo lookup</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(empty(outputs('Compose_Geo')), '<span style=\"color:#a4262c\">failed &mdash; no geodata returned</span>', 'ok')}</td></tr>\n</table>\n\n@{variables('SigninHtml')}\n\n@{if(and(empty(variables('AbuseHtml')), empty(variables('VTHtml'))), '', concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Reputation</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">', variables('AbuseHtml'), variables('VTHtml'), '</table>'))}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No results &mdash; this IP was not observed in any queried table.</td></tr>'), join(body('Select_Insight_Rows'), ''))}\n</table>\n"
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nIP enrichment &mdash; <code>@{items('For_each_IP_entity')?['Address']}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Geolocation</b> <span style=\"font-weight:400;color:#605e5c\">(Microsoft Sentinel enrichment API &mdash; confidence 0-100 where shown)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organization'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organizationType'], '-'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">City</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['city'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['cityCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Country</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['country'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['countryCf'], '-'))})</span></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">State</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['state'], 'n/a'))} <span style=\"color:#605e5c\">(@{string(coalesce(outputs('Compose_Geo')?['stateCode'], '-'))}, cf @{string(coalesce(outputs('Compose_Geo')?['stateCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Continent</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['continent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Region</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['region'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Coordinates</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://www.bing.com/maps?cp=@{string(coalesce(outputs('Compose_Geo')?['latitude'], '0'))}~@{string(coalesce(outputs('Compose_Geo')?['longitude'], '0'))}&amp;lvl=9\">@{string(coalesce(outputs('Compose_Geo')?['latitude'], 'n/a'))}, @{string(coalesce(outputs('Compose_Geo')?['longitude'], 'n/a'))}</a></td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Network / ASN</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">ASN</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['asn'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Carrier</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['carrier'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Routing type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">RIR network</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['name'], 'n/a'))} (@{string(coalesce(outputs('Compose_RDAP')?['handle'], 'n/a'))})</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Range</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['startAddress'], 'n/a'))} &ndash; @{string(coalesce(outputs('Compose_RDAP')?['endAddress'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Allocation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['type'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Tor exit node</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), '<b style=\"color:#a4262c\">Yes &mdash; known Tor exit node</b>', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hosting / datacentre</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), '<b style=\"color:#a4262c\">Yes</b>', 'No')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Mobile / wireless</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'mobile'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'wireless'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'cellular')), 'Yes', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Geo lookup</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(empty(outputs('Compose_Geo')), '<span style=\"color:#a4262c\">failed &mdash; no geodata returned</span>', 'ok')}</td></tr>\n</table>\n\n@{variables('SigninHtml')}\n\n@{if(empty(concat(variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'))), '', concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Reputation</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">', variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'), '</table>'))}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No results &mdash; this IP was not observed in any queried table.</td></tr>'), join(body('Select_Insight_Rows'), ''))}\n</table>\n"
                   }
                 }
               }
@@ -860,6 +1139,15 @@
           },
           "VirusTotalApiKey": {
             "value": "[parameters('VirusTotalApiKey')]"
+          },
+          "GreyNoiseApiKey": {
+            "value": "[parameters('GreyNoiseApiKey')]"
+          },
+          "EnableShodanInternetDB": {
+            "value": "[parameters('EnableShodanInternetDB')]"
+          },
+          "IPContextWatchlistAlias": {
+            "value": "[parameters('IPContextWatchlistAlias')]"
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
