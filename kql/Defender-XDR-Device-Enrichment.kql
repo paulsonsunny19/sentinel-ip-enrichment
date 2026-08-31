@@ -1,0 +1,102 @@
+// Microsoft Defender XDR Advanced Hunting - device enrichment test query
+// Change DeviceNameInput before running this in security.microsoft.com/advanced-hunting.
+// The production Logic App uses the same tables but returns one compact summary record.
+
+let DeviceNameInput = "device01.contoso.com";
+let Lookback = 14d;
+let Host = tolower(DeviceNameInput);
+let ShortName = tostring(split(Host, ".")[0]);
+let Devices = materialize(
+    DeviceInfo
+    | where Timestamp > ago(30d)
+    | extend NormalizedName=tolower(DeviceName), NormalizedShortName=tolower(tostring(split(DeviceName, ".")[0]))
+    | where NormalizedName == Host or NormalizedShortName == ShortName
+    | summarize arg_max(Timestamp, *) by DeviceId
+    | extend MatchRank=iff(NormalizedName == Host, 2, 1)
+    | sort by MatchRank desc, Timestamp desc
+    | take 1);
+let DeviceIds = Devices | project DeviceId;
+let TargetName = toscalar(Devices | project DeviceName);
+union isfuzzy=true
+(Devices
+ | project Section="Profile",
+           Detail=strcat(DeviceName, " | ", OSPlatform, " ", OSVersion,
+                         " | onboarding: ", OnboardingStatus, " | sensor: ", SensorHealthState,
+                         " | exposure: ", ExposureLevel, " | asset: ", AssetValue,
+                         " | internet-facing: ", IsInternetFacing, " | public IP: ", PublicIP),
+           Last=Timestamp),
+(AlertEvidence
+ | where Timestamp > ago(Lookback) and DeviceId in (DeviceIds)
+ | summarize Alerts=dcount(AlertId), High=dcountif(AlertId, tolower(Severity) == "high"),
+             Medium=dcountif(AlertId, tolower(Severity) == "medium"), Titles=make_set(Title, 10), Last=max(Timestamp)
+ | where Alerts > 0
+ | project Section="Alerts", Detail=strcat(Alerts, " alert(s), ", High, " high, ", Medium, " medium | ", tostring(Titles)), Last),
+(DeviceTvmSoftwareVulnerabilities
+ | where DeviceId in (DeviceIds)
+ | summarize UniqueCves=dcount(CveId), Critical=dcountif(CveId, tolower(VulnerabilitySeverityLevel) == "critical"),
+             High=dcountif(CveId, tolower(VulnerabilitySeverityLevel) == "high"),
+             ZeroDay=dcountif(CveId, tostring(CveTags) has "ZeroDay"), Cves=make_set(CveId, 12)
+ | where UniqueCves > 0
+ | project Section="Vulnerabilities", Detail=strcat(UniqueCves, " unique CVEs, ", Critical, " critical, ",
+                         High, " high, ", ZeroDay, " zero-day | ", tostring(Cves)), Last=now()),
+(DeviceTvmSecureConfigurationAssessment
+ | where DeviceId in (DeviceIds)
+ | summarize arg_max(Timestamp, *) by DeviceId, ConfigurationId
+ | where IsApplicable == true and IsCompliant == false
+ | summarize Gaps=count(), HighImpact=countif(ConfigurationImpact >= 7.0),
+             Categories=make_set(ConfigurationSubcategory, 10), Last=max(Timestamp)
+ | where Gaps > 0
+ | project Section="Configuration gaps", Detail=strcat(Gaps, " gap(s), ", HighImpact,
+                         " high-impact | ", tostring(Categories)), Last),
+(DeviceLogonEvents
+ | where Timestamp > ago(Lookback) and DeviceId in (DeviceIds)
+ | summarize Logons=count(), Failed=countif(isnotempty(FailureReason) or ActionType has "Fail"),
+             Accounts=make_set(strcat(AccountDomain, "/", AccountName), 10),
+             LocalAdmins=make_set_if(strcat(AccountDomain, "/", AccountName), IsLocalAdmin == true, 10),
+             RemoteIPs=make_set(RemoteIP, 10), Last=max(Timestamp)
+ | where Logons > 0
+ | project Section="Endpoint logons", Detail=strcat(Logons, " logon(s), ", Failed, " failed | accounts: ",
+                         tostring(Accounts), " | local admins: ", tostring(LocalAdmins),
+                         " | remote IPs: ", tostring(RemoteIPs)), Last),
+(IdentityLogonEvents
+ | where Timestamp > ago(Lookback)
+ | where tolower(DeviceName) == tolower(TargetName) or tolower(DestinationDeviceName) == tolower(TargetName)
+ | summarize Logons=count(), Failed=countif(isnotempty(FailureReason) or ActionType has "Fail"),
+             Accounts=make_set(coalesce(AccountUpn, AccountName), 10), Protocols=make_set(Protocol, 8), Last=max(Timestamp)
+ | where Logons > 0
+ | project Section="Identity logons", Detail=strcat(Logons, " authentication event(s), ", Failed,
+                         " failed | accounts: ", tostring(Accounts), " | protocols: ", tostring(Protocols)), Last),
+(DeviceNetworkEvents
+ | where Timestamp > ago(Lookback) and DeviceId in (DeviceIds)
+ | summarize Events=count(), PublicRemote=countif(RemoteIPType == "Public"),
+             RemoteIPs=make_set(RemoteIP, 12), Urls=make_set(RemoteUrl, 10),
+             Processes=make_set(InitiatingProcessFileName, 10), Last=max(Timestamp)
+ | where Events > 0
+ | project Section="Network", Detail=strcat(Events, " event(s), ", PublicRemote, " public remote | IPs: ",
+                         tostring(RemoteIPs), " | URLs: ", tostring(Urls), " | processes: ", tostring(Processes)), Last),
+(DeviceProcessEvents
+ | where Timestamp > ago(Lookback) and DeviceId in (DeviceIds)
+ | summarize Events=count(), Distinct=dcount(FileName),
+             PowerShell=countif(FileName in~ ("powershell.exe", "pwsh.exe", "powershell_ise.exe")),
+             Elevated=countif(ProcessTokenElevation == "TokenElevationTypeFull"),
+             Names=make_set(FileName, 12), Accounts=make_set(coalesce(AccountUpn, AccountName), 10), Last=max(Timestamp)
+ | where Events > 0
+ | project Section="Processes", Detail=strcat(Events, " event(s), ", Distinct, " distinct, ", PowerShell,
+                         " PowerShell, ", Elevated, " elevated | ", tostring(Names),
+                         " | accounts: ", tostring(Accounts)), Last),
+(DeviceEvents
+ | where Timestamp > ago(Lookback) and DeviceId in (DeviceIds)
+ | where ActionType has_any ("Antivirus", "Exploit", "Tamper", "NetworkProtection", "SmartScreen", "Asr", "EDR")
+ | summarize Events=count(), Actions=make_set(ActionType, 12), Files=make_set(FileName, 10), Last=max(Timestamp)
+ | where Events > 0
+ | project Section="Security controls", Detail=strcat(Events, " event(s) | actions: ", tostring(Actions),
+                         " | files: ", tostring(Files)), Last),
+(DeviceNetworkInfo
+ | where Timestamp > ago(Lookback) and DeviceId in (DeviceIds)
+ | summarize arg_max(Timestamp, *) by DeviceId, NetworkAdapterName
+ | summarize Adapters=count(), IPs=make_set(IPAddresses, 10), Macs=make_set(MacAddress, 10),
+             Networks=make_set(ConnectedNetworks, 8), Last=max(Timestamp)
+ | where Adapters > 0
+ | project Section="Network configuration", Detail=strcat(Adapters, " adapter(s) | IPs: ", tostring(IPs),
+                         " | MACs: ", tostring(Macs), " | networks: ", tostring(Networks)), Last)
+| order by Last desc
