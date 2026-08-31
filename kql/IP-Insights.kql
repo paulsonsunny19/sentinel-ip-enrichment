@@ -11,6 +11,7 @@
 // =====================================================================================
 let ip = '103.187.6.124';          // playbook substitutes the entity address
 let look = 14d;                    // playbook substitutes LookbackDays
+let watchAlias = 'IPContext';      // set blank to disable client watchlist context
 //
 // ---------- Threat intelligence -------------------------------------------------
 let TI = union isfuzzy=true
@@ -130,17 +131,63 @@ let Alerts = union isfuzzy=true
               Detail = strcat(C, ' alert(s) in 30d | ', tostring(Names), ' | severity: ', tostring(Sev)), Last
 );
 //
-union isfuzzy=true TI, Sightings, Alerts
+// ---------- Client-maintained IP context watchlist -------------------------------
+// SearchKey = IP. Recommended columns: Classification, Owner, Description,
+// RiskOverride, ValidUntil.
+let ClientContext = union isfuzzy=true
+(
+    Watchlist
+    | where isnotempty(watchAlias)
+    | where WatchlistAlias == watchAlias and SearchKey == ip
+    | summarize arg_max(TimeGenerated, *) by SearchKey
+    | extend W = todynamic(WatchlistItem)
+    | extend Classification = coalesce(tostring(W.Classification), tostring(W.Category), 'unclassified')
+    | project Source = iff(tolower(Classification) in ('knownbad', 'malicious', 'block'),
+                           'Client IP context - high', 'Client IP context'),
+              Detail = strcat('classification: ', Classification,
+                              ' | owner: ', coalesce(tostring(W.Owner), 'n/a'),
+                              ' | ', coalesce(tostring(W.Description), tostring(W.Notes), 'no description'),
+                              ' | override: ', coalesce(tostring(W.RiskOverride), 'none'),
+                              ' | valid until: ', coalesce(tostring(W.ValidUntil), 'not set')),
+              Last = coalesce(LastUpdatedTimeUTC, TimeGenerated)
+);
+//
+// ---------- UEBA and ASIM-normalized tenant telemetry -----------------------------
+let Ueba = union isfuzzy=true
+(
+    BehaviorAnalytics
+    | where TimeGenerated > ago(look)
+    | where SourceIPAddress == ip or DestinationIPAddress == ip
+    | top 5 by InvestigationPriority desc
+    | project Source = iff(InvestigationPriority >= 8, 'UEBA high anomaly', 'UEBA'),
+              Detail = strcat('priority ', InvestigationPriority, '/10 | ', ActivityType, ' / ', ActionType,
+                              ' | user: ', coalesce(UserPrincipalName, UserName, 'n/a'),
+                              ' | source: ', EventSource),
+              Last = TimeGenerated
+);
+let Network = union isfuzzy=true
+(
+    _Im_NetworkSession(starttime=ago(look), endtime=now(), ipaddr_has_any_prefix=pack_array(ip))
+    | where SrcIpAddr == ip or DstIpAddr == ip
+    | summarize C = sum(EventCount), Devices = make_set(coalesce(SrcHostname, DstHostname, Dvc), 5),
+                Ports = make_set(DstPortNumber, 8), Actions = make_set(DvcAction, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'ASIM network',
+              Detail = strcat(C, ' session(s) | devices: ', tostring(Devices),
+                              ' | destination ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last
+);
+let Dns = union isfuzzy=true
+(
+    _Im_Dns(starttime=ago(look), endtime=now(), response_has_ipv4=ip)
+    | summarize C = count(), Domains = make_set(DnsQuery, 10),
+                Clients = make_set(coalesce(SrcHostname, SrcIpAddr), 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'ASIM DNS',
+              Detail = strcat(C, ' response(s) | domains: ', tostring(Domains),
+                              ' | clients: ', tostring(Clients)), Last
+);
+//
+union isfuzzy=true TI, Sightings, Alerts, ClientContext, Ueba, Network, Dns
 | where isnotempty(Source)
 | order by Last desc
-| take 60
-
-
-// ---------------------------------------------------------------------------------
-// OPTIONAL: watchlist match (STAT's "Watchlist Insights").
-// _GetWatchlist() throws if the watchlist does not exist, so add this leg only for
-// watchlists you actually have, and add `WL` to the final union above.
-// ---------------------------------------------------------------------------------
-// let WL = _GetWatchlist('HighValueAssets')
-//     | where SearchKey == ip
-//     | project Source = 'Watchlist', Detail = strcat('Present in watchlist HighValueAssets'), Last = now();
+| take 100
