@@ -16,6 +16,7 @@ client-specific entitlement are explicit opt-ins.
 | **Client IP context watchlist** — classification, owner, notes, override | included | none (managed identity) | your workspace | optional `IPContext` watchlist; your own data |
 | **UEBA / ASIM network / ASIM DNS** — anomalous use and tenant telemetry | included when those features/data connectors are present | none (managed identity) | your workspace | your own data; missing tables/parsers fail open |
 | **Workspace KQL** — TI, sightings, prior alerts, sign-in context | included | none (managed identity) | your workspace | your own data |
+| **Defender XDR Advanced Hunting** — endpoint network/logons, identity, cloud apps, URL clicks, email and alert evidence | included with the relevant Defender products | Microsoft Graph managed identity | 30-day raw-data maximum; tenant hunting quotas apply | optional; requires `ThreatHunting.Read.All` application permission |
 | VirusTotal | **off by default** | Premium key | 500/day, 4/min on the free key | the free public API forbids use "in business workflows that do not contribute new files" — a SOC enrichment playbook is exactly that, so leave this blank unless you hold a Premium key |
 | Shodan InternetDB | **off by default** | none | public service | free InternetDB use is non-commercial; enable only when the client has Shodan Enterprise permission |
 
@@ -29,6 +30,7 @@ Deliberately *not* used: **ip-api.com** (free tier is non-commercial only).
 | **Network / ASN** | ASN, carrier, IP routing type, RIR network name/handle/range/allocation type, Tor exit node, hosting/datacentre, mobile/wireless |
 | **Sign-in context** | Most recent Entra sign-in from this IP: user, app, result, IP address status (known/unknown), trusted named location, known-IP history, country code, proxy and hosting flags, device trust type, device name/ID, compliant + managed, OS, browser, full user agent, sign-in risk level/state/detail, risk events, Conditional Access result, auth requirement |
 | **Reputation** | AbuseIPDB, optional GreyNoise Community, optional licensed VirusTotal and Shodan InternetDB |
+| **Defender XDR Advanced Hunting** | Direct Microsoft Graph results from DeviceNetworkEvents, DeviceLogonEvents, CloudAppEvents, IdentityLogonEvents, UrlClickEvents, EmailEvents and AlertEvidence—even when those events are not ingested into Log Analytics |
 | **Workspace insights** | Client `IPContext` watchlist, UEBA, ASIM network/DNS, threat-intel matches, sightings across SigninLogs, non-interactive sign-ins, AzureActivity, OfficeActivity, SecurityEvent, CommonSecurityLog, DeviceNetworkEvents, VMConnection, W3CIISLog, AWSCloudTrail, and prior alerts referencing the IP |
 
 Each IP gets a **HIGH / MEDIUM / LOW** chip:
@@ -42,8 +44,9 @@ Each IP gets a **HIGH / MEDIUM / LOW** chip:
 ```
 azuredeploy.json                  ARM template — the Logic App playbook (deploy this)
 build_template.py                 generator for azuredeploy.json (edit here, re-run; don't hand-edit the JSON)
-Invoke-SentinelIPEnrichment.ps1   same enrichment as a script — testing, backfill, or an Automation runbook
+Invoke-SentinelIPEnrichment.ps1   standalone test/backfill script (does not call Defender XDR)
 kql/IP-Insights.kql               the workspace-insights query, standalone, for tuning in the Logs blade
+kql/Defender-XDR-IP-Insights.kql  the direct Defender query, for testing in Advanced Hunting
 preview.html                      what the comment looks like, with sample data
 make_preview.py                   regenerates preview.html
 ```
@@ -80,11 +83,40 @@ az role assignment create --assignee-object-id $PID --assignee-principal-type Se
   --scope /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.OperationalInsights/workspaces/bfree-sentinel-law
 ```
 
-**3. Authorise the two API connections.** Both are pre-configured for managed identity but each needs
+**3. Optional: grant direct Defender XDR hunting permission.** Only do this when deploying with
+`EnableDefenderAdvancedHunting=true`. This is a Microsoft Graph application permission—not Azure
+RBAC—and requires an Entra administrator. The deployment output is the managed identity's service
+principal object ID.
+
+```powershell
+$playbookPrincipalId = az deployment group show -g <rg> -n azuredeploy `
+    --query properties.outputs.managedIdentityPrincipalId.value -o tsv
+
+Connect-MgGraph -Scopes "Application.Read.All","AppRoleAssignment.ReadWrite.All"
+
+$graphServicePrincipal = Get-MgServicePrincipal `
+    -Filter "appId eq '00000003-0000-0000-c000-000000000000'" `
+    -Property "id,appRoles"
+
+$huntingRole = $graphServicePrincipal.AppRoles | Where-Object {
+    $_.Value -eq "ThreatHunting.Read.All" -and
+    $_.AllowedMemberTypes -contains "Application"
+}
+
+New-MgServicePrincipalAppRoleAssignment `
+    -ServicePrincipalId $playbookPrincipalId `
+    -PrincipalId $playbookPrincipalId `
+    -ResourceId $graphServicePrincipal.Id `
+    -AppRoleId $huntingRole.Id
+```
+
+Managed-identity tokens are cached, so allow time for the new role to propagate before testing.
+
+**4. Authorise the two API connections.** Both are pre-configured for managed identity but each needs
 one click: *Logic App → API connections → MicrosoftSentinel-… / AzureMonitorLogs-… → Edit API
 connection → Authorize → Save*.
 
-**4. Wire it up.** Either *Sentinel → Automation → Create automation rule* → trigger *When incident is
+**5. Wire it up.** Either *Sentinel → Automation → Create automation rule* → trigger *When incident is
 created* → action *Run playbook*; or open any incident → *Run playbook* to test on demand.
 
 Sentinel needs `Microsoft Sentinel Automation Contributor` on the playbook's resource group before an
@@ -114,6 +146,8 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
 | `VirusTotalApiKey` | *(empty)* | leave blank — see the licence note above |
 | `GreyNoiseApiKey` | *(empty)* | Community key; blank skips the row |
 | `EnableShodanInternetDB` | `false` | enable only with Shodan Enterprise permission for commercial use |
+| `EnableDefenderAdvancedHunting` | `false` | direct Microsoft Graph query; requires `ThreatHunting.Read.All` application permission |
+| `DefenderLookbackDays` | `14` | Defender raw-data lookback, from 1 to 30 days |
 | `IPContextWatchlistAlias` | `IPContext` | set blank to disable; `SearchKey` must contain the IP |
 
 ## Optional client IP watchlist
@@ -126,7 +160,7 @@ severity or the external reputation verdict.
 
 ## Things worth knowing
 
-- **Nothing is fatal.** Every lookup and both KQL queries run with failure tolerated — a rate-limited
+- **Nothing is fatal.** Every lookup, workspace query and Defender query runs with failure tolerated — a rate-limited
   API, a blocked egress path, or a table you don't collect degrades that one section to "lookup
   failed" / "No results" rather than failing the run. `union isfuzzy=true` is what makes missing
   tables safe.
@@ -141,9 +175,17 @@ severity or the external reputation verdict.
   sign-ins from the same IP between 90 days ago and the start of the lookback window: any prior
   sign-in ⇒ *Known IP address*, plus a trusted named location ⇒ *Known and trusted*. Change the
   `hist = 90d` line to move that baseline.
-- **No extra Azure RBAC is required for the new tenant enrichments.** `Log Analytics Reader` covers
+- **No extra Azure RBAC is required for the workspace-native enrichments.** `Log Analytics Reader` covers
   the Watchlist, BehaviorAnalytics and normalized ASIM queries. UEBA and the relevant data
-  connectors/parsers still need to be enabled for those rows to return data.
+  connectors/parsers still need to be enabled for those rows to return data. Direct Defender
+  Advanced Hunting is different: it requires the Entra application-role assignment
+  `ThreatHunting.Read.All` on the managed identity.
+- **Defender results are a separate section and do not currently change HIGH/MEDIUM/LOW.** This
+  avoids automatically changing a client incident verdict before its Defender data has been tested.
+  The query is capped at 60 summarized rows per IP and `DefenderLookbackDays` cannot exceed 30.
+- **Defender hunting telemetry is protected in Logic App run history.** The direct Microsoft Graph
+  action uses secure inputs and outputs; the selected summary is intentionally posted to the
+  Sentinel incident comment for analysts who can access that incident.
 - **API-key inputs are secured in run history.** AbuseIPDB, VirusTotal, and GreyNoise HTTP actions
   use secure inputs so their headers aren't displayed to operators viewing a run.
 - **Private/internal IPs** return no geodata. If most of your entities are RFC1918, filter them at the
