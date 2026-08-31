@@ -1,0 +1,867 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Enrich IP entities and post a Sentinel incident comment",
+    "description": "STAT-style IP enrichment built on sources that are free for business use. For every IP entity on the incident it collects geolocation and ASN from Sentinel's own enrichment API, RIR registration via RDAP, Tor exit-node membership, optional AbuseIPDB reputation, Entra sign-in context (device trust, OS, browser, user agent, risk), and workspace-native insights (threat intel matches, sightings across sign-in/activity/network tables, prior alerts), then writes one formatted HTML comment back to the incident.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: a free AbuseIPDB API key.",
+    "postDeployment": [
+      "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
+      "Grant the same identity 'Log Analytics Reader' on the workspace.",
+      "Authorise both API connections (they are pre-set to managed identity).",
+      "Attach the playbook to an automation rule, or run it on demand from an incident."
+    ],
+    "lastUpdateTime": "2026-08-31",
+    "entities": [
+      "Ip"
+    ],
+    "tags": [
+      "Enrichment",
+      "Threat Intelligence",
+      "Geolocation"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-IP-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "WorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics / Sentinel workspace name."
+      }
+    },
+    "WorkspaceResourceGroup": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Resource group of the workspace."
+      }
+    },
+    "WorkspaceSubscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": {
+        "description": "Subscription of the workspace."
+      }
+    },
+    "LookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 90,
+      "metadata": {
+        "description": "How far back to search workspace tables for sightings."
+      }
+    },
+    "TorExitListUrl": {
+      "type": "string",
+      "defaultValue": "https://check.torproject.org/torbulkexitlist",
+      "metadata": {
+        "description": "Public Tor exit-node list, fetched once per run. Point at an internal mirror if outbound access is restricted, or blank-check it by leaving the run to fail open (the check simply reports 'No')."
+      }
+    },
+    "AbuseIPDBApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Free AbuseIPDB key (1,000 checks/day). Leave blank to skip the AbuseIPDB row."
+      }
+    },
+    "VirusTotalApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "OPTIONAL and OFF by default. VirusTotal's free public API forbids use in business workflows, so supply a Premium key or leave this blank."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
+    "MonitorLogsConnectionName": "[concat('AzureMonitorLogs-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('MonitorLogsConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('MonitorLogsConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "Enrich-IP-IncidentComment",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "LookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "TorExitListUrl": {
+              "type": "String",
+              "defaultValue": "https://check.torproject.org/torbulkexitlist"
+            },
+            "AbuseIPDBApiKey": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "VirusTotalApiKey": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "WorkspaceSubscriptionId": {
+              "type": "String"
+            },
+            "WorkspaceResourceGroup": {
+              "type": "String"
+            },
+            "WorkspaceName": {
+              "type": "String"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Init_HtmlBody": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "HtmlBody",
+                    "type": "string",
+                    "value": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#605e5c\">Automated IP enrichment &mdash; playbook <b>@{workflow()?['name']}</b> &middot; run @{formatDateTime(utcNow(), 'yyyy-MM-dd HH:mm')} UTC</div>"
+                  }
+                ]
+              }
+            },
+            "Init_AbuseHtml": {
+              "runAfter": {
+                "Init_HtmlBody": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "AbuseHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_VTHtml": {
+              "runAfter": {
+                "Init_AbuseHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "VTHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_AbuseScore": {
+              "runAfter": {
+                "Init_VTHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "AbuseScore",
+                    "type": "integer",
+                    "value": 0
+                  }
+                ]
+              }
+            },
+            "Init_VTMalicious": {
+              "runAfter": {
+                "Init_AbuseScore": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "VTMalicious",
+                    "type": "integer",
+                    "value": 0
+                  }
+                ]
+              }
+            },
+            "Init_SigninHtml": {
+              "runAfter": {
+                "Init_VTMalicious": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "SigninHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "HTTP_Tor_Exit_List": {
+              "runAfter": {
+                "Init_SigninHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "method": "GET",
+                "uri": "@parameters('TorExitListUrl')"
+              }
+            },
+            "Compose_TorList": {
+              "runAfter": {
+                "HTTP_Tor_Exit_List": [
+                  "Succeeded",
+                  "Failed",
+                  "TimedOut"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@if(equals(outputs('HTTP_Tor_Exit_List')?['statusCode'], 200), split(replace(string(body('HTTP_Tor_Exit_List')), decodeUriComponent('%0D'), ''), decodeUriComponent('%0A')), json('[]'))"
+            },
+            "Entities_-_Get_IPs": {
+              "runAfter": {
+                "Compose_TorList": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/ip"
+              }
+            },
+            "For_each_IP_entity": {
+              "foreach": "@body('Entities_-_Get_IPs')?['IPs']",
+              "runAfter": {
+                "Entities_-_Get_IPs": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach",
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "actions": {
+                "Reset_AbuseHtml": {
+                  "runAfter": {},
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "AbuseHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_VTHtml": {
+                  "runAfter": {
+                    "Reset_AbuseHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "VTHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_AbuseScore": {
+                  "runAfter": {
+                    "Reset_VTHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "AbuseScore",
+                    "value": 0
+                  }
+                },
+                "Reset_VTMalicious": {
+                  "runAfter": {
+                    "Reset_AbuseScore": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "VTMalicious",
+                    "value": 0
+                  }
+                },
+                "Reset_SigninHtml": {
+                  "runAfter": {
+                    "Reset_VTMalicious": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "SigninHtml",
+                    "value": ""
+                  }
+                },
+                "HTTP_Sentinel_Geodata": {
+                  "runAfter": {
+                    "Reset_SigninHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Http",
+                  "inputs": {
+                    "method": "GET",
+                    "uri": "https://management.azure.com/subscriptions/@{parameters('WorkspaceSubscriptionId')}/resourceGroups/@{parameters('WorkspaceResourceGroup')}/providers/Microsoft.SecurityInsights/enrichment/ip/geodata/",
+                    "queries": {
+                      "ipAddress": "@{items('For_each_IP_entity')?['Address']}",
+                      "api-version": "2023-02-01-preview"
+                    },
+                    "authentication": {
+                      "type": "ManagedServiceIdentity",
+                      "audience": "https://management.azure.com"
+                    }
+                  }
+                },
+                "Compose_Geo": {
+                  "runAfter": {
+                    "HTTP_Sentinel_Geodata": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('HTTP_Sentinel_Geodata')?['statusCode'], 200), coalesce(body('HTTP_Sentinel_Geodata'), json('{}')), json('{}'))"
+                },
+                "HTTP_RDAP": {
+                  "runAfter": {
+                    "Compose_Geo": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Http",
+                  "inputs": {
+                    "method": "GET",
+                    "uri": "https://rdap.org/ip/@{items('For_each_IP_entity')?['Address']}",
+                    "headers": {
+                      "Accept": "application/rdap+json"
+                    }
+                  }
+                },
+                "Compose_RDAP": {
+                  "runAfter": {
+                    "HTTP_RDAP": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('HTTP_RDAP')?['statusCode'], 200), coalesce(body('HTTP_RDAP'), json('{}')), json('{}'))"
+                },
+                "Condition_AbuseIPDB_key_present": {
+                  "runAfter": {
+                    "Compose_RDAP": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('AbuseIPDBApiKey')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_AbuseIPDB": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "https://api.abuseipdb.com/api/v2/check",
+                        "queries": {
+                          "ipAddress": "@{items('For_each_IP_entity')?['Address']}",
+                          "maxAgeInDays": "90"
+                        },
+                        "headers": {
+                          "Key": "@parameters('AbuseIPDBApiKey')",
+                          "Accept": "application/json"
+                        }
+                      }
+                    },
+                    "Set_AbuseScore": {
+                      "runAfter": {
+                        "HTTP_AbuseIPDB": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "AbuseScore",
+                        "value": "@if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), int(coalesce(body('HTTP_AbuseIPDB')?['data']?['abuseConfidenceScore'], 0)), 0)"
+                      }
+                    },
+                    "Set_AbuseHtml": {
+                      "runAfter": {
+                        "Set_AbuseScore": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "AbuseHtml",
+                        "value": "@if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AbuseIPDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), concat('Confidence of abuse: <b>', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['abuseConfidenceScore'], 0)), '%</b>',' &nbsp;|&nbsp; ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['totalReports'], 0)), ' report(s) from ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['numDistinctUsers'], 0)), ' reporter(s)',' &nbsp;|&nbsp; usage: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['usageType'], 'n/a')),' &nbsp;|&nbsp; domain: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['domain'], 'n/a')),' &nbsp;|&nbsp; Tor: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['isTor'], false)),' &nbsp;|&nbsp; last report: ', string(coalesce(body('HTTP_AbuseIPDB')?['data']?['lastReportedAt'], 'never'))), 'lookup failed or rate limited')}</td></tr>', '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AbuseIPDB</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup failed</td></tr>')"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Condition_VirusTotal_key_present": {
+                  "runAfter": {
+                    "Condition_AbuseIPDB_key_present": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('VirusTotalApiKey')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_VirusTotal": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "https://www.virustotal.com/api/v3/ip_addresses/@{items('For_each_IP_entity')?['Address']}",
+                        "headers": {
+                          "x-apikey": "@parameters('VirusTotalApiKey')"
+                        }
+                      }
+                    },
+                    "Set_VTMalicious": {
+                      "runAfter": {
+                        "HTTP_VirusTotal": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "VTMalicious",
+                        "value": "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), int(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['malicious'], 0)), 0)"
+                      }
+                    },
+                    "Set_VTHtml": {
+                      "runAfter": {
+                        "Set_VTMalicious": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "VTHtml",
+                        "value": "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">VirusTotal</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), concat('<b>', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['malicious'], 0)), '</b> malicious / ',string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['suspicious'], 0)), ' suspicious / ',string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['last_analysis_stats']?['harmless'], 0)), ' harmless',' &nbsp;|&nbsp; community reputation: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['reputation'], 0)),' &nbsp;|&nbsp; network: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['network'], 'n/a')),' &nbsp;|&nbsp; owner: ', string(coalesce(body('HTTP_VirusTotal')?['data']?['attributes']?['as_owner'], 'n/a'))), 'lookup failed or rate limited')} &nbsp;|&nbsp; <a href=\"https://www.virustotal.com/gui/ip-address/@{items('For_each_IP_entity')?['Address']}\">open in VirusTotal</a></td></tr>', '<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">VirusTotal</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">lookup failed</td></tr>')"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Run_KQL_signin_context": {
+                  "runAfter": {
+                    "Condition_VirusTotal_key_present": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "let ip = '@{items('For_each_IP_entity')?['Address']}';\nlet look = @{parameters('LookbackDays')}d;\nlet hist = 90d;\nlet priorCount = toscalar(SigninLogs | where TimeGenerated between (ago(hist) .. ago(look)) | where IPAddress == ip | summarize count());\nSigninLogs\n| where TimeGenerated > ago(look)\n| where IPAddress == ip\n| summarize arg_max(TimeGenerated, *)\n| extend D = parse_json(tostring(DeviceDetail)), L = parse_json(tostring(LocationDetails)), N = tostring(NetworkLocationDetails)\n| project\n    SignInUser = tostring(UserPrincipalName),\n    SignInTime = format_datetime(TimeGenerated, 'yyyy-MM-dd HH:mm:ss'),\n    SignInApp = tostring(AppDisplayName),\n    SignInResult = strcat(tostring(ResultType), iff(isnotempty(ResultDescription), strcat(' - ', ResultDescription), '')),\n    CountryCode = iff(isempty(tostring(L.countryOrRegion)), 'Unknown', tostring(L.countryOrRegion)),\n    CityState = strcat(iff(isempty(tostring(L.city)), 'Unknown', tostring(L.city)), ', ', tostring(L.state)),\n    TrustedLocation = case(N has 'trustedNamedLocation', 'Trusted named location',\n                           N has 'namedLocation', 'Named location (not trusted)',\n                           'Unknown'),\n    KnownIP = iff(priorCount > 0, strcat('Yes - ', priorCount, ' prior sign-ins in the previous 90d'), 'No - first observed in this window'),\n    IPAddressStatus = case(priorCount > 0 and N has 'trustedNamedLocation', 'Known and trusted IP address',\n                           priorCount > 0, 'Known IP address',\n                           'Unknown IP address'),\n    DeviceTrust = iff(isempty(tostring(D.trustType)), 'Unregistered / unknown', tostring(D.trustType)),\n    DeviceName = iff(isempty(tostring(D.displayName)), 'n/a', tostring(D.displayName)),\n    DeviceId = iff(isempty(tostring(D.deviceId)), 'n/a', tostring(D.deviceId)),\n    DeviceCompliant = tostring(D.isCompliant),\n    DeviceManaged = tostring(D.isManaged),\n    OperatingSystem = iff(isempty(tostring(D.operatingSystem)), 'n/a', tostring(D.operatingSystem)),\n    Browser = iff(isempty(tostring(D.browser)), 'n/a', tostring(D.browser)),\n    AgentString = tostring(column_ifexists('UserAgent', '')),\n    RiskLevel = tostring(RiskLevelDuringSignIn),\n    RiskState = tostring(RiskState),\n    RiskDetail = tostring(RiskDetail),\n    RiskEvents = tostring(column_ifexists('RiskEventTypes_V2', dynamic([]))),\n    ConditionalAccess = tostring(ConditionalAccessStatus),\n    AuthRequirement = tostring(AuthenticationRequirement)\n| take 1",
+                    "path": "/queryData",
+                    "queries": {
+                      "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                      "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                      "resourcetype": "Log Analytics Workspace",
+                      "resourcename": "@parameters('WorkspaceName')",
+                      "timerange": "Set in query"
+                    }
+                  }
+                },
+                "Compose_Signin": {
+                  "runAfter": {
+                    "Run_KQL_signin_context": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(and(equals(actions('Run_KQL_signin_context')?['status'], 'Succeeded'), greater(length(coalesce(body('Run_KQL_signin_context')?['value'], json('[]'))), 0)), first(body('Run_KQL_signin_context')?['value']), json('{}'))"
+                },
+                "Condition_signin_found": {
+                  "runAfter": {
+                    "Compose_Signin": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "not": {
+                          "equals": [
+                            "@empty(outputs('Compose_Signin'))",
+                            true
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Set_SigninHtml": {
+                      "runAfter": {},
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "SigninHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sign-in context</b> <span style=\"font-weight:400;color:#605e5c\">(most recent sign-in from this IP)</span></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">User</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['SignInUser'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Sign-in time (UTC)</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['SignInTime'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Application</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['SignInApp'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Result</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['SignInResult'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">IP address status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(outputs('Compose_Signin')?['IPAddressStatus'], 'n/a'))}</b></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">IP trusted location</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['TrustedLocation'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Known IP</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['KnownIP'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Country code (sign-in)</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['CountryCode'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Is proxy / anonymiser</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), '<b style=\"color:#a4262c\">Yes &mdash; known Tor exit node</b>', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Is hosting / datacentre</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), '<b style=\"color:#a4262c\">Yes</b>', 'No')}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Device trust</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['DeviceTrust'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Device name</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['DeviceName'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Compliant / managed</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['DeviceCompliant'], 'unknown'))} / @{string(coalesce(outputs('Compose_Signin')?['DeviceManaged'], 'unknown'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Device ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['DeviceId'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Operating system</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['OperatingSystem'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Browser</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['Browser'], 'n/a'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">User agent</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\"><code style=\"font-size:11px\">@{string(coalesce(outputs('Compose_Signin')?['AgentString'], 'not recorded'))}</code></td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Sign-in risk</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['RiskLevel'], 'none'))} (state: @{string(coalesce(outputs('Compose_Signin')?['RiskState'], 'none'))}, detail: @{string(coalesce(outputs('Compose_Signin')?['RiskDetail'], 'none'))})</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Risk events</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['RiskEvents'], '[]'))}</td></tr><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Conditional Access</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['ConditionalAccess'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Auth requirement</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Signin')?['AuthRequirement'], 'n/a'))}</td></tr></table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_SigninHtml_none": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "SigninHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sign-in context</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">No Entra ID sign-in from this IP in the last @{parameters('LookbackDays')} days (or SigninLogs is not collected in this workspace).</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Run_KQL_insights": {
+                  "runAfter": {
+                    "Condition_signin_found": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "let ip = '@{items('For_each_IP_entity')?['Address']}';\nlet look = @{parameters('LookbackDays')}d;\nlet TI = union isfuzzy=true\n(ThreatIntelligenceIndicator\n | where TimeGenerated > ago(30d)\n | where NetworkIP == ip or NetworkSourceIP == ip or NetworkDestinationIP == ip\n | where Active == true\n | summarize arg_max(TimeGenerated, *) by IndicatorId\n | project Source = 'Threat Intel', Detail = strcat('TI match - ', coalesce(Description, 'indicator'), ' | type: ', coalesce(ThreatType, 'n/a'), ' | confidence: ', tostring(ConfidenceScore), ' | feed: ', coalesce(SourceSystem, 'n/a')), Last = TimeGenerated),\n(ThreatIntelIndicators\n | where TimeGenerated > ago(30d)\n | where ObservableValue == ip\n | summarize arg_max(TimeGenerated, *) by Id\n | project Source = 'Threat Intel', Detail = strcat('TI match - ', tostring(Data.description), ' | confidence: ', tostring(Confidence)), Last = TimeGenerated);\nlet Sightings = union isfuzzy=true\n(SigninLogs | where TimeGenerated > ago(look) | where IPAddress == ip\n | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'), Users = make_set(UserPrincipalName, 8), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'SigninLogs', Detail = strcat(C, ' sign-ins, ', U, ' user(s), ', F, ' failed | ', tostring(Users)), Last),\n(AADNonInteractiveUserSignInLogs | where TimeGenerated > ago(look) | where IPAddress == ip\n | summarize C = count(), U = dcount(UserPrincipalName), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s)'), Last),\n(AzureActivity | where TimeGenerated > ago(look) | where CallerIpAddress == ip\n | summarize C = count(), Callers = make_set(Caller, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'AzureActivity', Detail = strcat(C, ' operations | callers: ', tostring(Callers)), Last),\n(OfficeActivity | where TimeGenerated > ago(look) | where ClientIP has ip\n | summarize C = count(), U = make_set(UserId, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'OfficeActivity', Detail = strcat(C, ' events | users: ', tostring(U)), Last),\n(SecurityEvent | where TimeGenerated > ago(look) | where IpAddress == ip\n | summarize C = count(), Hosts = make_set(Computer, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'SecurityEvent', Detail = strcat(C, ' events | hosts: ', tostring(Hosts)), Last),\n(CommonSecurityLog | where TimeGenerated > ago(look) | where SourceIP == ip or DestinationIP == ip\n | summarize C = count(), Dev = dcount(DeviceName), Act = make_set(DeviceAction, 5), Ports = make_set(DestinationPort, 8), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'CommonSecurityLog', Detail = strcat(C, ' events across ', Dev, ' device(s) | actions: ', tostring(Act), ' | dst ports: ', tostring(Ports)), Last),\n(DeviceNetworkEvents | where TimeGenerated > ago(look) | where RemoteIP == ip\n | summarize C = count(), Dev = make_set(DeviceName, 5), Proc = make_set(InitiatingProcessFileName, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'DeviceNetworkEvents', Detail = strcat(C, ' connections | devices: ', tostring(Dev), ' | processes: ', tostring(Proc)), Last),\n(VMConnection | where TimeGenerated > ago(look) | where RemoteIp == ip\n | summarize C = count(), Dev = make_set(Computer, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'VMConnection', Detail = strcat(C, ' connections | hosts: ', tostring(Dev)), Last),\n(W3CIISLog | where TimeGenerated > ago(look) | where cIP == ip\n | summarize C = count(), Sites = make_set(sSiteName, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'W3CIISLog', Detail = strcat(C, ' requests | sites: ', tostring(Sites)), Last),\n(AWSCloudTrail | where TimeGenerated > ago(look) | where SourceIpAddress == ip\n | summarize C = count(), Users = make_set(UserIdentityArn, 5), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'AWSCloudTrail', Detail = strcat(C, ' API calls | identities: ', tostring(Users)), Last);\nlet Alerts = union isfuzzy=true\n(SecurityAlert | where TimeGenerated > ago(30d) | where Entities has ip\n | summarize C = count(), Names = make_set(AlertName, 5), Sev = make_set(AlertSeverity, 4), Last = max(TimeGenerated)\n | where C > 0 | project Source = 'Prior alerts', Detail = strcat(C, ' alert(s) in 30d | ', tostring(Names), ' | severity: ', tostring(Sev)), Last);\nunion isfuzzy=true TI, Sightings, Alerts\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
+                    "path": "/queryData",
+                    "queries": {
+                      "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                      "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                      "resourcetype": "Log Analytics Workspace",
+                      "resourcename": "@parameters('WorkspaceName')",
+                      "timerange": "Set in query"
+                    }
+                  }
+                },
+                "Compose_Rows": {
+                  "runAfter": {
+                    "Run_KQL_insights": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(actions('Run_KQL_insights')?['status'], 'Succeeded'), coalesce(body('Run_KQL_insights')?['value'], json('[]')), json('[]'))"
+                },
+                "Filter_TI": {
+                  "runAfter": {
+                    "Compose_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Query",
+                  "inputs": {
+                    "from": "@outputs('Compose_Rows')",
+                    "where": "@equals(item()?['Source'], 'Threat Intel')"
+                  }
+                },
+                "Select_Insight_Rows": {
+                  "runAfter": {
+                    "Filter_TI": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Select",
+                  "inputs": {
+                    "from": "@outputs('Compose_Rows')",
+                    "select": "<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{item()?['Source']}</b></td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Detail']}</td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Last']}</td></tr>"
+                  }
+                },
+                "Compose_Verdict": {
+                  "runAfter": {
+                    "Select_Insight_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(or(greater(length(body('Filter_TI')), 0), greater(variables('VTMalicious'), 0), greaterOrEquals(variables('AbuseScore'), 50), contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'high')), 'HIGH', if(or(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), greaterOrEquals(variables('AbuseScore'), 25), equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'medium'), startsWith(string(coalesce(outputs('Compose_Signin')?['IPAddressStatus'], '')), 'Unknown')), 'MEDIUM', 'LOW'))"
+                },
+                "Compose_VerdictStyle": {
+                  "runAfter": {
+                    "Compose_Verdict": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('Compose_Verdict'), 'HIGH'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#a4262c', if(equals(outputs('Compose_Verdict'), 'MEDIUM'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#986f0b', 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#107c10'))"
+                },
+                "Compose_VerdictReason": {
+                  "runAfter": {
+                    "Compose_VerdictStyle": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@concat('Signals: ', string(length(body('Filter_TI'))), ' TI match(es) &middot; AbuseIPDB ', string(variables('AbuseScore')), '% &middot; VT malicious ', string(variables('VTMalicious')), ' &middot; Tor exit: ', if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), 'yes', 'no'), ' &middot; ', string(length(outputs('Compose_Rows'))), ' workspace insight row(s)')"
+                },
+                "Append_IP_block": {
+                  "runAfter": {
+                    "Compose_VerdictReason": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "AppendToStringVariable",
+                  "inputs": {
+                    "name": "HtmlBody",
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nIP enrichment &mdash; <code>@{items('For_each_IP_entity')?['Address']}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Geolocation</b> <span style=\"font-weight:400;color:#605e5c\">(Microsoft Sentinel enrichment API &mdash; confidence 0-100 where shown)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organization'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organizationType'], '-'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">City</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['city'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['cityCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Country</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['country'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['countryCf'], '-'))})</span></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">State</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['state'], 'n/a'))} <span style=\"color:#605e5c\">(@{string(coalesce(outputs('Compose_Geo')?['stateCode'], '-'))}, cf @{string(coalesce(outputs('Compose_Geo')?['stateCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Continent</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['continent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Region</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['region'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Coordinates</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://www.bing.com/maps?cp=@{string(coalesce(outputs('Compose_Geo')?['latitude'], '0'))}~@{string(coalesce(outputs('Compose_Geo')?['longitude'], '0'))}&amp;lvl=9\">@{string(coalesce(outputs('Compose_Geo')?['latitude'], 'n/a'))}, @{string(coalesce(outputs('Compose_Geo')?['longitude'], 'n/a'))}</a></td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Network / ASN</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">ASN</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['asn'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Carrier</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['carrier'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Routing type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">RIR network</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['name'], 'n/a'))} (@{string(coalesce(outputs('Compose_RDAP')?['handle'], 'n/a'))})</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Range</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['startAddress'], 'n/a'))} &ndash; @{string(coalesce(outputs('Compose_RDAP')?['endAddress'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Allocation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['type'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Tor exit node</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), '<b style=\"color:#a4262c\">Yes &mdash; known Tor exit node</b>', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hosting / datacentre</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), '<b style=\"color:#a4262c\">Yes</b>', 'No')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Mobile / wireless</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'mobile'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'wireless'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'cellular')), 'Yes', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Geo lookup</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(empty(outputs('Compose_Geo')), '<span style=\"color:#a4262c\">failed &mdash; no geodata returned</span>', 'ok')}</td></tr>\n</table>\n\n@{variables('SigninHtml')}\n\n@{if(and(empty(variables('AbuseHtml')), empty(variables('VTHtml'))), '', concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Reputation</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">', variables('AbuseHtml'), variables('VTHtml'), '</table>'))}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No results &mdash; this IP was not observed in any queried table.</td></tr>'), join(body('Select_Insight_Rows'), ''))}\n</table>\n"
+                  }
+                }
+              }
+            },
+            "Condition_any_IP_entities": {
+              "runAfter": {
+                "For_each_IP_entity": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "and": [
+                  {
+                    "greater": [
+                      "@length(coalesce(body('Entities_-_Get_IPs')?['IPs'], json('[]')))",
+                      0
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Add_comment_to_incident_V3": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>@{variables('HtmlBody')}</p>"
+                    },
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              },
+              "azuremonitorlogs": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]",
+                "connectionName": "[variables('MonitorLogsConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              }
+            }
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "TorExitListUrl": {
+            "value": "[parameters('TorExitListUrl')]"
+          },
+          "AbuseIPDBApiKey": {
+            "value": "[parameters('AbuseIPDBApiKey')]"
+          },
+          "VirusTotalApiKey": {
+            "value": "[parameters('VirusTotalApiKey')]"
+          },
+          "WorkspaceSubscriptionId": {
+            "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "WorkspaceResourceGroup": {
+            "value": "[parameters('WorkspaceResourceGroup')]"
+          },
+          "WorkspaceName": {
+            "value": "[parameters('WorkspaceName')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId]"
+    }
+  }
+}
