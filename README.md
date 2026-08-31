@@ -1,0 +1,141 @@
+# Sentinel IP Enrichment → Incident Comment
+
+STAT-style IP enrichment for Microsoft Sentinel, built **only on sources that are free and licensed
+for business use**. For every IP entity on an incident it writes a single formatted comment.
+
+## Sources and what they cost
+
+| Source | Cost | Key | Limit | Licence note |
+|---|---|---|---|---|
+| **Sentinel geodata enrichment API** — geolocation, ASN, org type, routing type | included with Sentinel | none (managed identity) | 100 calls/user/hour | first-party; the lookup never leaves your tenant. Public preview. |
+| **RDAP** (`rdap.org`) — RIR network, range, allocation type | free | none | none published | public registry data |
+| **Tor bulk exit list** — anonymiser detection | free | none | fetched once per run | public list published by the Tor Project |
+| **AbuseIPDB** — abuse confidence, reports, usage type | free tier | free key | 1,000 checks/day | free plan carries no commercial-use prohibition |
+| **Workspace KQL** — TI, sightings, prior alerts, sign-in context | included | none (managed identity) | your workspace | your own data |
+| VirusTotal | **off by default** | Premium key | 500/day, 4/min on the free key | the free public API forbids use "in business workflows that do not contribute new files" — a SOC enrichment playbook is exactly that, so leave this blank unless you hold a Premium key |
+
+Deliberately *not* used: **ip-api.com** (free tier is non-commercial only) and **GreyNoise Community**
+(50 lookups/week on the free tier, too low for a playbook).
+
+## What lands in the comment
+
+| Section | Contents |
+|---|---|
+| **Geolocation** | Organization + organization type, city, country, state (+ state code), continent, region, coordinates with map link — each with Microsoft's 0–100 confidence rating where provided |
+| **Network / ASN** | ASN, carrier, IP routing type, RIR network name/handle/range/allocation type, Tor exit node, hosting/datacentre, mobile/wireless |
+| **Sign-in context** | Most recent Entra sign-in from this IP: user, app, result, IP address status (known/unknown), trusted named location, known-IP history, country code, proxy and hosting flags, device trust type, device name/ID, compliant + managed, OS, browser, full user agent, sign-in risk level/state/detail, risk events, Conditional Access result, auth requirement |
+| **Reputation** | AbuseIPDB confidence, report count, reporters, usage type, Tor flag, last report (skipped entirely if you supply no key) |
+| **Workspace insights** | Threat-intel matches, sightings across SigninLogs, non-interactive sign-ins, AzureActivity, OfficeActivity, SecurityEvent, CommonSecurityLog, DeviceNetworkEvents, VMConnection, W3CIISLog, AWSCloudTrail, and prior alerts referencing the IP |
+
+Each IP gets a **HIGH / MEDIUM / LOW** chip:
+
+- **HIGH** — a TI match, Tor exit node, AbuseIPDB ≥ 50, VT malicious > 0, or sign-in risk `high`
+- **MEDIUM** — hosting/datacentre, AbuseIPDB ≥ 25, sign-in risk `medium`, or an unknown IP address
+- **LOW** — none of the above
+
+## Files
+
+```
+azuredeploy.json                  ARM template — the Logic App playbook (deploy this)
+build_template.py                 generator for azuredeploy.json (edit here, re-run; don't hand-edit the JSON)
+Invoke-SentinelIPEnrichment.ps1   same enrichment as a script — testing, backfill, or an Automation runbook
+kql/IP-Insights.kql               the workspace-insights query, standalone, for tuning in the Logs blade
+preview.html                      what the comment looks like, with sample data
+make_preview.py                   regenerates preview.html
+```
+
+## Deploy (about 10 minutes)
+
+**1. Deploy the template**
+
+```bash
+az deployment group create \
+  --resource-group <rg-holding-your-workspace> \
+  --template-file azuredeploy.json \
+  --parameters WorkspaceName=bfree-sentinel-law LookbackDays=14
+```
+
+Everything works with no keys at all. Add `AbuseIPDBApiKey=<key>` once you've registered a free
+account if you want the reputation row.
+
+**2. Grant the managed identity two roles.** The deployment outputs `ManagedIdentityPrincipalId`.
+
+```bash
+PID=$(az deployment group show -g <rg> -n azuredeploy \
+      --query properties.outputs.managedIdentityPrincipalId.value -o tsv)
+
+# post comments, and read the geodata enrichment API (Responder covers both)
+az role assignment create --assignee-object-id $PID --assignee-principal-type ServicePrincipal \
+  --role "Microsoft Sentinel Responder" \
+  --scope /subscriptions/<sub>/resourceGroups/<rg>
+
+# run the KQL
+az role assignment create --assignee-object-id $PID --assignee-principal-type ServicePrincipal \
+  --role "Log Analytics Reader" \
+  --scope /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.OperationalInsights/workspaces/bfree-sentinel-law
+```
+
+**3. Authorise the two API connections.** Both are pre-configured for managed identity but each needs
+one click: *Logic App → API connections → MicrosoftSentinel-… / AzureMonitorLogs-… → Edit API
+connection → Authorize → Save*.
+
+**4. Wire it up.** Either *Sentinel → Automation → Create automation rule* → trigger *When incident is
+created* → action *Run playbook*; or open any incident → *Run playbook* to test on demand.
+
+Sentinel needs `Microsoft Sentinel Automation Contributor` on the playbook's resource group before an
+automation rule can call it; the portal offers to grant this on the automation-rule blade.
+
+## Test before deploying
+
+```powershell
+Connect-AzAccount
+./Invoke-SentinelIPEnrichment.ps1 -SubscriptionId <sub> -ResourceGroupName <rg> `
+    -WorkspaceName bfree-sentinel-law -IpAddress 103.187.6.124,69.160.113.77 -PreviewOnly
+# → preview.html, posts nothing
+```
+
+Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real incident.
+
+## Parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `PlaybookName` | `Enrich-IP-IncidentComment` | |
+| `WorkspaceName` | *(required)* | Sentinel workspace |
+| `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current | set if the workspace lives elsewhere |
+| `LookbackDays` | `14` | how far back sightings and sign-in context look |
+| `TorExitListUrl` | Tor Project bulk exit list | point at an internal mirror if outbound access is restricted |
+| `AbuseIPDBApiKey` | *(empty)* | free key, 1,000 checks/day; blank skips the row |
+| `VirusTotalApiKey` | *(empty)* | leave blank — see the licence note above |
+
+## Things worth knowing
+
+- **Nothing is fatal.** Every lookup and both KQL queries run with failure tolerated — a rate-limited
+  API, a blocked egress path, or a table you don't collect degrades that one section to "lookup
+  failed" / "No results" rather than failing the run. `union isfuzzy=true` is what makes missing
+  tables safe.
+- **The geodata API is capped at 100 calls per user per hour**, counted against the playbook's managed
+  identity. That's roughly 100 IP entities an hour across all incidents. If you're busier than that,
+  cache results in a watchlist or accept that the geo section degrades during bursts.
+- **Proxy/VPN detection is narrower than a paid feed.** Free sources give you Tor exit nodes reliably
+  and hosting/datacentre by inference from `organizationType` and `ipRoutingType`. Commercial VPN
+  exit nodes that aren't in a datacentre range won't be flagged. If that matters, the honest upgrade
+  is a paid feed — no free source covers it well.
+- **"IP address status" and "Known IP" are derived**, not fields Entra hands you. The query counts
+  sign-ins from the same IP between 90 days ago and the start of the lookback window: any prior
+  sign-in ⇒ *Known IP address*, plus a trusted named location ⇒ *Known and trusted*. Change the
+  `hist = 90d` line to move that baseline.
+- **Watchlist insights** aren't in v1 because `_GetWatchlist()` throws on a watchlist that doesn't
+  exist, which would take the whole query with it. A ready snippet sits at the bottom of
+  `kql/IP-Insights.kql` — add it to the final `union` once you name a watchlist you actually have.
+- **Private/internal IPs** return no geodata. If most of your entities are RFC1918, filter them at the
+  top of the loop.
+- **Edit `build_template.py`, not `azuredeploy.json`.** The JSON is generated; the HTML and KQL are
+  far easier to read in the Python source. Re-run `python3 build_template.py` after changes.
+
+## Obvious extensions
+
+- Tag the incident (`Add labels to incident`) when the verdict is HIGH
+- Raise incident severity on a TI match or Tor exit node
+- Add a second `Entities - Get Accounts` loop with matching account enrichment
+- Load additional free blocklists (Spamhaus DROP, blocklist.de) into a watchlist and join in the KQL
