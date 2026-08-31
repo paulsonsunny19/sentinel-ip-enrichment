@@ -1,0 +1,666 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Enrich device entities and post a Sentinel incident comment",
+    "description": "For each Host entity on a Microsoft Sentinel incident, correlates the host to Microsoft Defender XDR DeviceInfo and summarizes device inventory, EDR health, exposure, alerts, Vulnerability Management findings, configuration gaps, logons, identity authentication, network activity, processes and security-control events. It also queries Sentinel workspace telemetry and an optional client DeviceContext watchlist, calculates a HIGH/MEDIUM/LOW/UNKNOWN triage verdict, and posts one formatted incident comment.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. For direct Defender XDR enrichment, relevant Defender licensing/onboarding and Microsoft Graph application permission ThreatHunting.Read.All on the playbook managed identity are required.",
+    "postDeployment": [
+      "Grant the system-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+      "Grant the same identity Log Analytics Reader on the workspace.",
+      "Grant the managed identity Microsoft Graph application permission ThreatHunting.Read.All using an app-role assignment and allow time for token propagation.",
+      "Authorise the Microsoft Sentinel and Azure Monitor Logs API connections.",
+      "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident."
+    ],
+    "lastUpdateTime": "2026-08-31",
+    "entities": [
+      "Host"
+    ],
+    "tags": [
+      "Enrichment",
+      "Device",
+      "Defender XDR",
+      "Vulnerability Management"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-Device-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "WorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics / Sentinel workspace name."
+      }
+    },
+    "WorkspaceResourceGroup": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Resource group of the Sentinel workspace."
+      }
+    },
+    "WorkspaceSubscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": {
+        "description": "Subscription of the Sentinel workspace."
+      }
+    },
+    "LookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 90,
+      "metadata": {
+        "description": "How far back to query Sentinel workspace tables."
+      }
+    },
+    "EnableDefenderAdvancedHunting": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query Defender XDR Advanced Hunting directly through Microsoft Graph. Requires ThreatHunting.Read.All application permission."
+      }
+    },
+    "DefenderLookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 30,
+      "metadata": {
+        "description": "Defender Advanced Hunting activity lookback. Raw Defender hunting data is limited to 30 days."
+      }
+    },
+    "DeviceContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "DeviceContext",
+      "metadata": {
+        "description": "Optional client device watchlist alias. Set blank to disable."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
+    "MonitorLogsConnectionName": "[concat('AzureMonitorLogs-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('MonitorLogsConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('MonitorLogsConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueSet": {
+          "name": "managedIdentityAuth",
+          "values": {}
+        },
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "Enrich-Device-IncidentComment",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "LookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "EnableDefenderAdvancedHunting": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "DefenderLookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "DeviceContextWatchlistAlias": {
+              "type": "String",
+              "defaultValue": "DeviceContext"
+            },
+            "WorkspaceSubscriptionId": {
+              "type": "String"
+            },
+            "WorkspaceResourceGroup": {
+              "type": "String"
+            },
+            "WorkspaceName": {
+              "type": "String"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Init_HtmlBody": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "HtmlBody",
+                    "type": "string",
+                    "value": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#605e5c\">Automated device enrichment &mdash; playbook <b>@{workflow()?['name']}</b> &middot; run @{formatDateTime(utcNow(), 'yyyy-MM-dd HH:mm')} UTC</div>"
+                  }
+                ]
+              }
+            },
+            "Init_DefenderJson": {
+              "runAfter": {
+                "Init_HtmlBody": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderJson",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_DefenderStatus": {
+              "runAfter": {
+                "Init_DefenderJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderStatus",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_DefenderHtml": {
+              "runAfter": {
+                "Init_DefenderStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_Hosts": {
+              "runAfter": {
+                "Init_DefenderHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/host"
+              }
+            },
+            "For_each_host_entity": {
+              "foreach": "@body('Entities_-_Get_Hosts')?['Hosts']",
+              "runAfter": {
+                "Entities_-_Get_Hosts": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach",
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "actions": {
+                "Reset_DefenderJson": {
+                  "runAfter": {},
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderJson",
+                    "value": {}
+                  }
+                },
+                "Reset_DefenderStatus": {
+                  "runAfter": {
+                    "Reset_DefenderJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderStatus",
+                    "value": "disabled by deployment setting"
+                  }
+                },
+                "Reset_DefenderHtml": {
+                  "runAfter": {
+                    "Reset_DefenderStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderHtml",
+                    "value": ""
+                  }
+                },
+                "Condition_Defender_XDR_enabled": {
+                  "runAfter": {
+                    "Reset_DefenderHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableDefenderAdvancedHunting')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Defender_XDR_Device_Hunting": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
+                        "headers": {
+                          "Content-Type": "application/json; charset=utf-8"
+                        },
+                        "body": {
+                          "Query": "let host = '@{replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), '')}';\nlet domain = '@{replace(toLower(string(coalesce(items('For_each_host_entity')?['DnsDomain'], ''))), decodeUriComponent('%27'), '')}';\nlet azureId = '@{replace(toLower(string(coalesce(items('For_each_host_entity')?['AzureID'], ''))), decodeUriComponent('%27'), '')}';\nlet shortName = tostring(split(host, '.')[0]);\nlet fqdn = iff(isempty(domain) or host contains '.', host, strcat(host, '.', domain));\nlet look = @{parameters('DefenderLookbackDays')}d;\nlet Candidates = materialize(\n    DeviceInfo\n    | where Timestamp > ago(30d)\n    | extend NormalizedName = tolower(DeviceName), NormalizedShortName = tolower(tostring(split(DeviceName, '.')[0]))\n    | where NormalizedName == fqdn or NormalizedName == host or NormalizedShortName == shortName\n        or (isnotempty(azureId) and tolower(AzureResourceId) == azureId)\n    | summarize arg_max(Timestamp, *) by DeviceId\n    | extend MatchRank = case(isnotempty(azureId) and tolower(AzureResourceId) == azureId, 4,\n                              NormalizedName == fqdn, 3, NormalizedName == host, 2,\n                              NormalizedShortName == shortName, 1, 0)\n    | sort by MatchRank desc, Timestamp desc\n    | take 1);\nlet DeviceIds = Candidates | project DeviceId;\nlet AlertSummary = AlertEvidence\n    | where Timestamp > ago(look)\n    | where DeviceId in (DeviceIds)\n    | summarize Alerts=dcount(AlertId),\n                HighSeverityAlerts=dcountif(AlertId, tolower(Severity) == 'high'),\n                MediumSeverityAlerts=dcountif(AlertId, tolower(Severity) == 'medium'),\n                AlertTitles=make_set(Title, 10), AlertSeverities=make_set(Severity, 5),\n                AlertSources=make_set(ServiceSource, 6), AttackTechniques=make_set(AttackTechniques, 10),\n                LastAlert=max(Timestamp);\nlet VulnerabilitySummary = DeviceTvmSoftwareVulnerabilities\n    | where DeviceId in (DeviceIds)\n    | summarize Vulnerabilities=dcount(CveId),\n                CriticalVulnerabilities=dcountif(CveId, tolower(VulnerabilitySeverityLevel) == 'critical'),\n                HighVulnerabilities=dcountif(CveId, tolower(VulnerabilitySeverityLevel) == 'high'),\n                MediumVulnerabilities=dcountif(CveId, tolower(VulnerabilitySeverityLevel) == 'medium'),\n                ZeroDayVulnerabilities=dcountif(CveId, tostring(CveTags) has 'ZeroDay'),\n                NoSecurityUpdateVulnerabilities=dcountif(CveId, tostring(CveTags) has 'NoSecurityUpdate');\nlet TopVulnerabilitySummary = DeviceTvmSoftwareVulnerabilities\n    | where DeviceId in (DeviceIds)\n    | extend SeverityRank=case(tolower(VulnerabilitySeverityLevel) == 'critical', 4,\n                               tolower(VulnerabilitySeverityLevel) == 'high', 3,\n                               tolower(VulnerabilitySeverityLevel) == 'medium', 2, 1)\n    | sort by SeverityRank desc, CveId asc\n    | take 10\n    | summarize Values=make_list(strcat(CveId, ' (', VulnerabilitySeverityLevel, ') - ', SoftwareName, ' ', SoftwareVersion), 10);\nlet LatestConfigurations = DeviceTvmSecureConfigurationAssessment\n    | where DeviceId in (DeviceIds)\n    | summarize arg_max(Timestamp, *) by DeviceId, ConfigurationId;\nlet ConfigurationSummary = LatestConfigurations\n    | summarize ConfigurationGaps=countif(IsApplicable == true and IsCompliant == false),\n                HighImpactConfigurationGaps=countif(IsApplicable == true and IsCompliant == false and ConfigurationImpact >= 7.0),\n                ConfigurationCategories=make_set_if(ConfigurationSubcategory, IsApplicable == true and IsCompliant == false, 10);\nlet TopConfigurationGapSummary = LatestConfigurations\n    | where IsApplicable == true and IsCompliant == false\n    | sort by ConfigurationImpact desc\n    | take 8\n    | summarize Values=make_list(strcat(ConfigurationSubcategory, ' [', ConfigurationId, '] impact ', tostring(ConfigurationImpact)), 8);\nlet LogonSummary = DeviceLogonEvents\n    | where Timestamp > ago(look)\n    | where DeviceId in (DeviceIds)\n    | summarize Logons=count(), FailedLogons=countif(isnotempty(FailureReason) or ActionType has 'Fail'),\n                LogonAccounts=make_set(strcat(AccountDomain, '/', AccountName), 10),\n                LocalAdminAccounts=make_set_if(strcat(AccountDomain, '/', AccountName), IsLocalAdmin == true, 10),\n                LogonTypes=make_set(LogonType, 8), LogonRemoteIPs=make_set(RemoteIP, 10), LastLogon=max(Timestamp);\nlet IdentityLogonSummary = IdentityLogonEvents\n    | where Timestamp > ago(look)\n    | where tolower(DeviceName) == tolower(tostring(toscalar(Candidates | project DeviceName)))\n        or tolower(DestinationDeviceName) == tolower(tostring(toscalar(Candidates | project DeviceName)))\n    | summarize IdentityLogons=count(), IdentityFailedLogons=countif(isnotempty(FailureReason) or ActionType has 'Fail'),\n                IdentityAccounts=make_set(coalesce(AccountUpn, AccountName), 10),\n                IdentityProtocols=make_set(Protocol, 8), LastIdentityLogon=max(Timestamp);\nlet NetworkSummary = DeviceNetworkEvents\n    | where Timestamp > ago(look)\n    | where DeviceId in (DeviceIds)\n    | summarize NetworkEvents=count(), PublicRemoteConnections=countif(RemoteIPType == 'Public'),\n                RemoteIPs=make_set(RemoteIP, 12), RemoteUrls=make_set(RemoteUrl, 10),\n                RemotePorts=make_set(RemotePort, 10), NetworkProcesses=make_set(InitiatingProcessFileName, 10),\n                LastNetworkEvent=max(Timestamp);\nlet ProcessSummary = DeviceProcessEvents\n    | where Timestamp > ago(look)\n    | where DeviceId in (DeviceIds)\n    | summarize ProcessEvents=count(), DistinctProcesses=dcount(FileName),\n                PowerShellEvents=countif(FileName in~ ('powershell.exe', 'pwsh.exe', 'powershell_ise.exe')),\n                ElevatedProcessEvents=countif(ProcessTokenElevation == 'TokenElevationTypeFull'),\n                ProcessNames=make_set(FileName, 12), ProcessAccounts=make_set(coalesce(AccountUpn, AccountName), 10),\n                LastProcessEvent=max(Timestamp);\nlet SecurityControlSummary = DeviceEvents\n    | where Timestamp > ago(look)\n    | where DeviceId in (DeviceIds)\n    | where ActionType has_any ('Antivirus', 'Exploit', 'Tamper', 'NetworkProtection', 'SmartScreen', 'Asr', 'EDR')\n    | summarize SecurityControlEvents=count(), SecurityControlActions=make_set(ActionType, 12),\n                SecurityControlFiles=make_set(FileName, 10), LastSecurityControlEvent=max(Timestamp);\nlet NetworkInfoSummary = DeviceNetworkInfo\n    | where Timestamp > ago(look)\n    | where DeviceId in (DeviceIds)\n    | summarize arg_max(Timestamp, *) by DeviceId, NetworkAdapterName\n    | summarize LocalIPAddresses=make_set(IPAddresses, 10), MacAddresses=make_set(MacAddress, 10),\n                ConnectedNetworks=make_set(ConnectedNetworks, 8), DnsSuffixes=make_set(NetworkAdapterDnsSuffix, 8);\nCandidates\n| extend Alerts=toint(coalesce(toscalar(AlertSummary | project Alerts), 0)),\n         HighSeverityAlerts=toint(coalesce(toscalar(AlertSummary | project HighSeverityAlerts), 0)),\n         MediumSeverityAlerts=toint(coalesce(toscalar(AlertSummary | project MediumSeverityAlerts), 0)),\n         AlertTitles=tostring(coalesce(toscalar(AlertSummary | project AlertTitles), dynamic([]))),\n         AlertSeverities=tostring(coalesce(toscalar(AlertSummary | project AlertSeverities), dynamic([]))),\n         AlertSources=tostring(coalesce(toscalar(AlertSummary | project AlertSources), dynamic([]))),\n         AttackTechniques=tostring(coalesce(toscalar(AlertSummary | project AttackTechniques), dynamic([]))),\n         LastAlert=toscalar(AlertSummary | project LastAlert),\n         Vulnerabilities=toint(coalesce(toscalar(VulnerabilitySummary | project Vulnerabilities), 0)),\n         CriticalVulnerabilities=toint(coalesce(toscalar(VulnerabilitySummary | project CriticalVulnerabilities), 0)),\n         HighVulnerabilities=toint(coalesce(toscalar(VulnerabilitySummary | project HighVulnerabilities), 0)),\n         MediumVulnerabilities=toint(coalesce(toscalar(VulnerabilitySummary | project MediumVulnerabilities), 0)),\n         ZeroDayVulnerabilities=toint(coalesce(toscalar(VulnerabilitySummary | project ZeroDayVulnerabilities), 0)),\n         NoSecurityUpdateVulnerabilities=toint(coalesce(toscalar(VulnerabilitySummary | project NoSecurityUpdateVulnerabilities), 0)),\n         TopVulnerabilities=tostring(coalesce(toscalar(TopVulnerabilitySummary | project Values), dynamic([]))),\n         ConfigurationGaps=toint(coalesce(toscalar(ConfigurationSummary | project ConfigurationGaps), 0)),\n         HighImpactConfigurationGaps=toint(coalesce(toscalar(ConfigurationSummary | project HighImpactConfigurationGaps), 0)),\n         ConfigurationCategories=tostring(coalesce(toscalar(ConfigurationSummary | project ConfigurationCategories), dynamic([]))),\n         TopConfigurationGaps=tostring(coalesce(toscalar(TopConfigurationGapSummary | project Values), dynamic([]))),\n         Logons=toint(coalesce(toscalar(LogonSummary | project Logons), 0)),\n         FailedLogons=toint(coalesce(toscalar(LogonSummary | project FailedLogons), 0)),\n         LogonAccounts=tostring(coalesce(toscalar(LogonSummary | project LogonAccounts), dynamic([]))),\n         LocalAdminAccounts=tostring(coalesce(toscalar(LogonSummary | project LocalAdminAccounts), dynamic([]))),\n         LogonTypes=tostring(coalesce(toscalar(LogonSummary | project LogonTypes), dynamic([]))),\n         LogonRemoteIPs=tostring(coalesce(toscalar(LogonSummary | project LogonRemoteIPs), dynamic([]))),\n         LastLogon=toscalar(LogonSummary | project LastLogon),\n         IdentityLogons=toint(coalesce(toscalar(IdentityLogonSummary | project IdentityLogons), 0)),\n         IdentityFailedLogons=toint(coalesce(toscalar(IdentityLogonSummary | project IdentityFailedLogons), 0)),\n         IdentityAccounts=tostring(coalesce(toscalar(IdentityLogonSummary | project IdentityAccounts), dynamic([]))),\n         IdentityProtocols=tostring(coalesce(toscalar(IdentityLogonSummary | project IdentityProtocols), dynamic([]))),\n         LastIdentityLogon=toscalar(IdentityLogonSummary | project LastIdentityLogon),\n         NetworkEvents=toint(coalesce(toscalar(NetworkSummary | project NetworkEvents), 0)),\n         PublicRemoteConnections=toint(coalesce(toscalar(NetworkSummary | project PublicRemoteConnections), 0)),\n         RemoteIPs=tostring(coalesce(toscalar(NetworkSummary | project RemoteIPs), dynamic([]))),\n         RemoteUrls=tostring(coalesce(toscalar(NetworkSummary | project RemoteUrls), dynamic([]))),\n         RemotePorts=tostring(coalesce(toscalar(NetworkSummary | project RemotePorts), dynamic([]))),\n         NetworkProcesses=tostring(coalesce(toscalar(NetworkSummary | project NetworkProcesses), dynamic([]))),\n         LastNetworkEvent=toscalar(NetworkSummary | project LastNetworkEvent),\n         ProcessEvents=toint(coalesce(toscalar(ProcessSummary | project ProcessEvents), 0)),\n         DistinctProcesses=toint(coalesce(toscalar(ProcessSummary | project DistinctProcesses), 0)),\n         PowerShellEvents=toint(coalesce(toscalar(ProcessSummary | project PowerShellEvents), 0)),\n         ElevatedProcessEvents=toint(coalesce(toscalar(ProcessSummary | project ElevatedProcessEvents), 0)),\n         ProcessNames=tostring(coalesce(toscalar(ProcessSummary | project ProcessNames), dynamic([]))),\n         ProcessAccounts=tostring(coalesce(toscalar(ProcessSummary | project ProcessAccounts), dynamic([]))),\n         LastProcessEvent=toscalar(ProcessSummary | project LastProcessEvent),\n         SecurityControlEvents=toint(coalesce(toscalar(SecurityControlSummary | project SecurityControlEvents), 0)),\n         SecurityControlActions=tostring(coalesce(toscalar(SecurityControlSummary | project SecurityControlActions), dynamic([]))),\n         SecurityControlFiles=tostring(coalesce(toscalar(SecurityControlSummary | project SecurityControlFiles), dynamic([]))),\n         LastSecurityControlEvent=toscalar(SecurityControlSummary | project LastSecurityControlEvent),\n         LocalIPAddresses=tostring(coalesce(toscalar(NetworkInfoSummary | project LocalIPAddresses), dynamic([]))),\n         MacAddresses=tostring(coalesce(toscalar(NetworkInfoSummary | project MacAddresses), dynamic([]))),\n         ConnectedNetworks=tostring(coalesce(toscalar(NetworkInfoSummary | project ConnectedNetworks), dynamic([]))),\n         DnsSuffixes=tostring(coalesce(toscalar(NetworkInfoSummary | project DnsSuffixes), dynamic([])))\n| project DeviceId, DeviceName, LastSeen=Timestamp, ClientVersion, PublicIP, OSPlatform, OSVersion,\n          OSBuild, OSArchitecture, OSDistribution, OSVersionInfo, DeviceCategory, DeviceType, DeviceSubtype,\n          Vendor, Model, IsAzureADJoined, JoinType, AadDeviceId, LoggedOnUsers, MachineGroup,\n          OnboardingStatus, SensorHealthState, ExposureLevel, AssetValue, IsInternetFacing, IsExcluded,\n          ExclusionReason, MitigationStatus, RegistryDeviceTag, DeviceManualTags, DeviceDynamicTags,\n          ConnectivityType, AzureResourceId, CloudPlatforms, Site, LocalIPAddresses, MacAddresses,\n          ConnectedNetworks, DnsSuffixes, Alerts, HighSeverityAlerts, MediumSeverityAlerts, AlertTitles,\n          AlertSeverities, AlertSources, AttackTechniques, LastAlert, Vulnerabilities, CriticalVulnerabilities,\n          HighVulnerabilities, MediumVulnerabilities, ZeroDayVulnerabilities, NoSecurityUpdateVulnerabilities,\n          TopVulnerabilities, ConfigurationGaps, HighImpactConfigurationGaps, ConfigurationCategories,\n          TopConfigurationGaps, Logons, FailedLogons, LogonAccounts, LocalAdminAccounts, LogonTypes,\n          LogonRemoteIPs, LastLogon, IdentityLogons, IdentityFailedLogons, IdentityAccounts,\n          IdentityProtocols, LastIdentityLogon, NetworkEvents, PublicRemoteConnections, RemoteIPs,\n          RemoteUrls, RemotePorts, NetworkProcesses, LastNetworkEvent, ProcessEvents, DistinctProcesses,\n          PowerShellEvents, ElevatedProcessEvents, ProcessNames, ProcessAccounts, LastProcessEvent,\n          SecurityControlEvents, SecurityControlActions, SecurityControlFiles, LastSecurityControlEvent",
+                          "Timespan": "P30D"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs",
+                            "outputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Compose_Defender_Rows": {
+                      "runAfter": {
+                        "HTTP_Defender_XDR_Device_Hunting": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(equals(outputs('HTTP_Defender_XDR_Device_Hunting')?['statusCode'], 200), coalesce(body('HTTP_Defender_XDR_Device_Hunting')?['results'], json('[]')), json('[]'))"
+                    },
+                    "Set_DefenderJson": {
+                      "runAfter": {
+                        "Compose_Defender_Rows": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderJson",
+                        "value": "@if(greater(length(outputs('Compose_Defender_Rows')), 0), first(outputs('Compose_Defender_Rows')), json('{}'))"
+                      }
+                    },
+                    "Set_DefenderStatus": {
+                      "runAfter": {
+                        "Set_DefenderJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderStatus",
+                        "value": "@if(not(equals(outputs('HTTP_Defender_XDR_Device_Hunting')?['statusCode'], 200)), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_Defender_XDR_Device_Hunting')?['statusCode'], 'no response')), ')'), if(greater(length(outputs('Compose_Defender_Rows')), 0), 'found', 'not found'))"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Condition_Defender_result_found": {
+                  "runAfter": {
+                    "Condition_Defender_XDR_enabled": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@variables('DefenderStatus')",
+                          "found"
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Set_DefenderHtml_found": {
+                      "runAfter": {},
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender XDR device profile</b> <span style=\"font-weight:400;color:#605e5c\">(direct Microsoft Graph Advanced Hunting)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Defender device</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://security.microsoft.com/machines/@{string(coalesce(variables('DefenderJson')?['DeviceId'], 'n/a'))}\">@{string(coalesce(variables('DefenderJson')?['DeviceName'], 'n/a'))}</a></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Device ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><code>@{string(coalesce(variables('DefenderJson')?['DeviceId'], 'n/a'))}</code></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['OSPlatform'], 'n/a'))} @{string(coalesce(variables('DefenderJson')?['OSVersion'], 'n/a'))} (build @{string(coalesce(variables('DefenderJson')?['OSBuild'], 'n/a'))}, @{string(coalesce(variables('DefenderJson')?['OSArchitecture'], 'n/a'))})</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['DeviceCategory'], 'n/a'))} / @{string(coalesce(variables('DefenderJson')?['DeviceType'], 'n/a'))} / @{string(coalesce(variables('DefenderJson')?['DeviceSubtype'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Vendor / model</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['Vendor'], 'n/a'))} / @{string(coalesce(variables('DefenderJson')?['Model'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['LastSeen'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Onboarding / sensor</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['OnboardingStatus'], 'n/a'))}</b> / <b>@{string(coalesce(variables('DefenderJson')?['SensorHealthState'], 'n/a'))}</b></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Agent / connectivity</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ClientVersion'], 'n/a'))} / @{string(coalesce(variables('DefenderJson')?['ConnectivityType'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Exposure / asset value</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['ExposureLevel'], 'n/a'))}</b> / @{string(coalesce(variables('DefenderJson')?['AssetValue'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Internet-facing</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['IsInternetFacing'], 'false'))}</b> &nbsp;|&nbsp; public IP: @{string(coalesce(variables('DefenderJson')?['PublicIP'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Entra join</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['IsAzureADJoined'], 'false'))} / @{string(coalesce(variables('DefenderJson')?['JoinType'], 'n/a'))} &nbsp;|&nbsp; ID: <code>@{string(coalesce(variables('DefenderJson')?['AadDeviceId'], 'n/a'))}</code></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Machine group / site</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['MachineGroup'], 'n/a'))} / @{string(coalesce(variables('DefenderJson')?['Site'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Cloud resource</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['CloudPlatforms'], 'n/a'))} &nbsp;|&nbsp; <code>@{string(coalesce(variables('DefenderJson')?['AzureResourceId'], 'n/a'))}</code></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Local addresses</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['LocalIPAddresses'], '[]'))} &nbsp;|&nbsp; MAC: @{string(coalesce(variables('DefenderJson')?['MacAddresses'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Logged-on users</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['LoggedOnUsers'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Tags</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">registry: @{string(coalesce(variables('DefenderJson')?['RegistryDeviceTag'], 'n/a'))} &nbsp;|&nbsp; manual: @{string(coalesce(variables('DefenderJson')?['DeviceManualTags'], 'n/a'))} &nbsp;|&nbsp; dynamic: @{string(coalesce(variables('DefenderJson')?['DeviceDynamicTags'], 'n/a'))}</td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender alerts and recent activity &mdash; last @{parameters('DefenderLookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Alerts</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['Alerts'], '0'))}</b> total &nbsp;|&nbsp; <b>@{string(coalesce(variables('DefenderJson')?['HighSeverityAlerts'], '0'))}</b> high &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['MediumSeverityAlerts'], '0'))} medium</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last alert</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['LastAlert'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Alert titles</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['AlertTitles'], '[]'))} &nbsp;|&nbsp; techniques: @{string(coalesce(variables('DefenderJson')?['AttackTechniques'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Endpoint logons</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['Logons'], '0'))} total / <b>@{string(coalesce(variables('DefenderJson')?['FailedLogons'], '0'))} failed</b> &nbsp;|&nbsp; types: @{string(coalesce(variables('DefenderJson')?['LogonTypes'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last logon</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['LastLogon'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Logon accounts</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['LogonAccounts'], '[]'))} &nbsp;|&nbsp; local admins: @{string(coalesce(variables('DefenderJson')?['LocalAdminAccounts'], '[]'))} &nbsp;|&nbsp; remote IPs: @{string(coalesce(variables('DefenderJson')?['LogonRemoteIPs'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Identity logons</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['IdentityLogons'], '0'))} total / <b>@{string(coalesce(variables('DefenderJson')?['IdentityFailedLogons'], '0'))} failed</b> &nbsp;|&nbsp; accounts: @{string(coalesce(variables('DefenderJson')?['IdentityAccounts'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Protocols</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['IdentityProtocols'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Network</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['NetworkEvents'], '0'))} event(s), @{string(coalesce(variables('DefenderJson')?['PublicRemoteConnections'], '0'))} public remote &nbsp;|&nbsp; IPs: @{string(coalesce(variables('DefenderJson')?['RemoteIPs'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last network event</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['LastNetworkEvent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Processes</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ProcessEvents'], '0'))} event(s), @{string(coalesce(variables('DefenderJson')?['DistinctProcesses'], '0'))} distinct, @{string(coalesce(variables('DefenderJson')?['PowerShellEvents'], '0'))} PowerShell, @{string(coalesce(variables('DefenderJson')?['ElevatedProcessEvents'], '0'))} elevated &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['ProcessNames'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last process</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['LastProcessEvent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Security controls</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['SecurityControlEvents'], '0'))} event(s) &nbsp;|&nbsp; actions: @{string(coalesce(variables('DefenderJson')?['SecurityControlActions'], '[]'))} &nbsp;|&nbsp; files: @{string(coalesce(variables('DefenderJson')?['SecurityControlFiles'], '[]'))}</td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender Vulnerability Management posture</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Vulnerabilities</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['CriticalVulnerabilities'], '0'))} critical</b> / <b>@{string(coalesce(variables('DefenderJson')?['HighVulnerabilities'], '0'))} high</b> / @{string(coalesce(variables('DefenderJson')?['MediumVulnerabilities'], '0'))} medium / @{string(coalesce(variables('DefenderJson')?['Vulnerabilities'], '0'))} unique total</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Special tags</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ZeroDayVulnerabilities'], '0'))} zero-day / @{string(coalesce(variables('DefenderJson')?['NoSecurityUpdateVulnerabilities'], '0'))} without security update</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Top vulnerabilities</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['TopVulnerabilities'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Configuration gaps</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['HighImpactConfigurationGaps'], '0'))} high-impact</b> / @{string(coalesce(variables('DefenderJson')?['ConfigurationGaps'], '0'))} total</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Categories</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ConfigurationCategories'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Top configuration gaps</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('DefenderJson')?['TopConfigurationGaps'], '[]'))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_DefenderHtml_unavailable": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "DefenderHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender XDR device enrichment</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Status: <b>@{variables('DefenderStatus')}</b>. If unavailable, confirm the Logic App managed identity has Microsoft Graph application permission <b>ThreatHunting.Read.All</b>, Defender for Endpoint is deployed, the device is onboarded, and the tenant has hunting quota available. Sentinel workspace enrichment continues independently.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Run_KQL_workspace_context": {
+                  "runAfter": {
+                    "Condition_Defender_result_found": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "let host = '@{replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), '')}';\nlet domain = '@{replace(toLower(string(coalesce(items('For_each_host_entity')?['DnsDomain'], ''))), decodeUriComponent('%27'), '')}';\nlet fqdn = iff(isempty(domain) or host contains '.', host, strcat(host, '.', domain));\nlet azureId = '@{replace(toLower(string(coalesce(items('For_each_host_entity')?['AzureID'], ''))), decodeUriComponent('%27'), '')}';\nlet look = @{parameters('LookbackDays')}d;\nlet watchAlias = '@{replace(parameters('DeviceContextWatchlistAlias'), decodeUriComponent('%27'), '')}';\nlet ClientContext = union isfuzzy=true\n(Watchlist\n | where isnotempty(watchAlias) and WatchlistAlias == watchAlias\n | where tolower(SearchKey) == host or tolower(SearchKey) == fqdn\n | summarize arg_max(TimeGenerated, *) by SearchKey\n | extend W=todynamic(WatchlistItem)\n | extend Classification=tolower(coalesce(tostring(W.Classification), tostring(W.Criticality), 'unclassified'))\n | project Source=iff(Classification in ('critical', 'crown-jewel', 'high', 'knownbad', 'compromised'), 'Client device context - critical', 'Client device context'),\n           Detail=strcat('classification: ', Classification, ' | owner: ', coalesce(tostring(W.Owner), 'n/a'),\n                         ' | environment: ', coalesce(tostring(W.Environment), 'n/a'),\n                         ' | function: ', coalesce(tostring(W.BusinessFunction), 'n/a'),\n                         ' | patch group: ', coalesce(tostring(W.PatchGroup), 'n/a'),\n                         ' | notes: ', coalesce(tostring(W.Description), tostring(W.Notes), 'none')),\n           Last=coalesce(LastUpdatedTimeUTC, TimeGenerated));\nlet Alerts = union isfuzzy=true\n(SecurityAlert\n | where TimeGenerated > ago(look)\n | extend EntityText=tolower(tostring(Entities)), Compromised=tolower(tostring(CompromisedEntity))\n | where Compromised in (host, fqdn) or EntityText has host\n | summarize AlertCount=count(), High=countif(tolower(AlertSeverity) == 'high'),\n             Names=make_set(AlertName, 10), Severities=make_set(AlertSeverity, 5),\n             Products=make_set(ProductName, 6), Last=max(TimeGenerated)\n | where AlertCount > 0\n | project Source=iff(High > 0, 'Sentinel high alert', 'Sentinel alerts'),\n           Detail=strcat(AlertCount, ' alert(s), ', High, ' high | ', tostring(Names),\n                         ' | severity: ', tostring(Severities), ' | products: ', tostring(Products)), Last);\nlet Endpoint = union isfuzzy=true\n(SecurityEvent\n | where TimeGenerated > ago(look)\n | where tolower(Computer) in (host, fqdn) or tolower(tostring(split(Computer, '.')[0])) == tostring(split(host, '.')[0])\n | summarize Events=count(), EventIds=make_set(EventID, 12), Accounts=make_set(coalesce(TargetUserName, SubjectUserName), 10), Last=max(TimeGenerated)\n | where Events > 0\n | project Source='SecurityEvent', Detail=strcat(Events, ' event(s) | IDs: ', tostring(EventIds), ' | accounts: ', tostring(Accounts)), Last),\n(WindowsEvent\n | where TimeGenerated > ago(look)\n | where tolower(Computer) in (host, fqdn) or tolower(tostring(split(Computer, '.')[0])) == tostring(split(host, '.')[0])\n | summarize Events=count(), EventIds=make_set(EventID, 12), Providers=make_set(Provider, 8), Last=max(TimeGenerated)\n | where Events > 0\n | project Source='WindowsEvent', Detail=strcat(Events, ' event(s) | IDs: ', tostring(EventIds), ' | providers: ', tostring(Providers)), Last),\n(Syslog\n | where TimeGenerated > ago(look)\n | where tolower(Computer) in (host, fqdn) or tolower(tostring(split(Computer, '.')[0])) == tostring(split(host, '.')[0])\n | summarize Events=count(), Facilities=make_set(Facility, 8), Severities=make_set(SeverityLevel, 8), Processes=make_set(ProcessName, 10), Last=max(TimeGenerated)\n | where Events > 0\n | project Source='Syslog', Detail=strcat(Events, ' event(s) | facilities: ', tostring(Facilities), ' | severity: ', tostring(Severities), ' | processes: ', tostring(Processes)), Last),\n(Heartbeat\n | where TimeGenerated > ago(look)\n | where tolower(Computer) in (host, fqdn) or tolower(tostring(split(Computer, '.')[0])) == tostring(split(host, '.')[0])\n | extend HBOS=tostring(column_ifexists('OSName', '')), HBVersion=tostring(column_ifexists('OSVersion', '')),\n          HBAgent=tostring(column_ifexists('AgentVersion', '')), HBIP=tostring(column_ifexists('ComputerIP', ''))\n | summarize Last=max(TimeGenerated), OS=take_any(HBOS), Version=take_any(HBVersion),\n             Agent=take_any(HBAgent), IP=take_any(HBIP), Solutions=make_set(Solutions, 8)\n | where isnotempty(Last)\n | project Source='Heartbeat', Detail=strcat('last heartbeat | OS: ', OS, ' ', Version, ' | agent: ', Agent,\n                                             ' | IP: ', IP, ' | solutions: ', tostring(Solutions)), Last),\n(SigninLogs\n | where TimeGenerated > ago(look)\n | extend D=parse_json(tostring(DeviceDetail)), SigninDevice=tolower(tostring(D.displayName))\n | where SigninDevice in (host, fqdn) or tostring(split(SigninDevice, '.')[0]) == tostring(split(host, '.')[0])\n | summarize Signins=count(), Failures=countif(ResultType != '0'), Users=make_set(UserPrincipalName, 10),\n             Apps=make_set(AppDisplayName, 8), Risk=make_set(RiskLevelDuringSignIn, 5), Last=max(TimeGenerated)\n | where Signins > 0\n | project Source='Entra device sign-ins', Detail=strcat(Signins, ' sign-in(s), ', Failures, ' failed | users: ',\n                           tostring(Users), ' | apps: ', tostring(Apps), ' | risk: ', tostring(Risk)), Last),\n(AzureActivity\n | where TimeGenerated > ago(look)\n | extend ActivityResource=tolower(coalesce(tostring(column_ifexists('_ResourceId', '')), tostring(column_ifexists('ResourceId', ''))))\n | where isnotempty(azureId) and ActivityResource == azureId\n | summarize Operations=count(), Callers=make_set(Caller, 8), Names=make_set(OperationNameValue, 10), Last=max(TimeGenerated)\n | where Operations > 0\n | project Source='Azure resource activity', Detail=strcat(Operations, ' operation(s) | callers: ', tostring(Callers), ' | operations: ', tostring(Names)), Last);\nunion isfuzzy=true ClientContext, Alerts, Endpoint\n| where isnotempty(Source)\n| order by Last desc\n| take 50",
+                    "path": "/queryData",
+                    "queries": {
+                      "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                      "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                      "resourcetype": "Log Analytics Workspace",
+                      "resourcename": "@parameters('WorkspaceName')",
+                      "timerange": "Set in query"
+                    }
+                  }
+                },
+                "Compose_Workspace_Rows": {
+                  "runAfter": {
+                    "Run_KQL_workspace_context": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(actions('Run_KQL_workspace_context')?['status'], 'Succeeded'), coalesce(body('Run_KQL_workspace_context')?['value'], json('[]')), json('[]'))"
+                },
+                "Filter_High_Workspace_Alerts": {
+                  "runAfter": {
+                    "Compose_Workspace_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Query",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "where": "@equals(item()?['Source'], 'Sentinel high alert')"
+                  }
+                },
+                "Filter_Critical_Client_Context": {
+                  "runAfter": {
+                    "Filter_High_Workspace_Alerts": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Query",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "where": "@equals(item()?['Source'], 'Client device context - critical')"
+                  }
+                },
+                "Select_Workspace_Rows": {
+                  "runAfter": {
+                    "Filter_Critical_Client_Context": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Select",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "select": "<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{item()?['Source']}</b></td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Detail']}</td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Last']}</td></tr>"
+                  }
+                },
+                "Compose_Verdict": {
+                  "runAfter": {
+                    "Select_Workspace_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(or(greater(int(coalesce(variables('DefenderJson')?['HighSeverityAlerts'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['CriticalVulnerabilities'], 0)), 0), and(equals(toLower(string(coalesce(variables('DefenderJson')?['ExposureLevel'], ''))), 'high'), equals(toLower(string(coalesce(variables('DefenderJson')?['IsInternetFacing'], 'false'))), 'true')), greater(length(body('Filter_High_Workspace_Alerts')), 0)), 'HIGH', if(or(greater(int(coalesce(variables('DefenderJson')?['MediumSeverityAlerts'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['HighVulnerabilities'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['HighImpactConfigurationGaps'], 0)), 0), equals(toLower(string(coalesce(variables('DefenderJson')?['ExposureLevel'], ''))), 'high'), equals(toLower(string(coalesce(variables('DefenderJson')?['ExposureLevel'], ''))), 'medium'), equals(toLower(string(coalesce(variables('DefenderJson')?['IsInternetFacing'], 'false'))), 'true'), and(not(empty(string(coalesce(variables('DefenderJson')?['SensorHealthState'], '')))), not(equals(toLower(string(variables('DefenderJson')?['SensorHealthState'])), 'active'))), and(not(empty(string(coalesce(variables('DefenderJson')?['OnboardingStatus'], '')))), not(equals(toLower(string(variables('DefenderJson')?['OnboardingStatus'])), 'onboarded'))), greater(length(body('Filter_Critical_Client_Context')), 0)), 'MEDIUM', if(and(empty(variables('DefenderJson')), empty(outputs('Compose_Workspace_Rows'))), 'UNKNOWN', 'LOW')))"
+                },
+                "Compose_VerdictStyle": {
+                  "runAfter": {
+                    "Compose_Verdict": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('Compose_Verdict'), 'HIGH'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#a4262c', if(equals(outputs('Compose_Verdict'), 'MEDIUM'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#986f0b', if(equals(outputs('Compose_Verdict'), 'LOW'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#107c10', 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#605e5c')))"
+                },
+                "Compose_VerdictReason": {
+                  "runAfter": {
+                    "Compose_VerdictStyle": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@concat('Defender status: ', variables('DefenderStatus'), ' &middot; alerts H/M: ', string(coalesce(variables('DefenderJson')?['HighSeverityAlerts'], 0)), '/', string(coalesce(variables('DefenderJson')?['MediumSeverityAlerts'], 0)), ' &middot; vulnerabilities C/H: ', string(coalesce(variables('DefenderJson')?['CriticalVulnerabilities'], 0)), '/', string(coalesce(variables('DefenderJson')?['HighVulnerabilities'], 0)), ' &middot; exposure: ', string(coalesce(variables('DefenderJson')?['ExposureLevel'], 'unknown')), ' &middot; internet-facing: ', string(coalesce(variables('DefenderJson')?['IsInternetFacing'], 'unknown')), ' &middot; ', string(length(outputs('Compose_Workspace_Rows'))), ' workspace insight row(s)')"
+                },
+                "Append_Device_block": {
+                  "runAfter": {
+                    "Compose_VerdictReason": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "AppendToStringVariable",
+                  "inputs": {
+                    "name": "HtmlBody",
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nDevice enrichment &mdash; <code>@{string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], 'unknown'))}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel host entity</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hostname</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['HostName'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">DNS / NT domain</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['DnsDomain'], 'n/a'))} / @{string(coalesce(items('For_each_host_entity')?['NTDomain'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">NetBIOS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['NetBiosName'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['OSFamily'], 'n/a'))} @{string(coalesce(items('For_each_host_entity')?['OSVersion'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Domain joined</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['IsDomainJoined'], 'unknown'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OMS agent ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><code>@{string(coalesce(items('For_each_host_entity')?['OMSAgentID'], 'n/a'))}</code></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Azure resource ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\"><code>@{string(coalesce(items('For_each_host_entity')?['AzureID'], 'n/a'))}</code></td></tr>\n</table>\n\n@{variables('DefenderHtml')}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
+                  }
+                }
+              }
+            },
+            "Condition_any_host_entities": {
+              "runAfter": {
+                "For_each_host_entity": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "and": [
+                  {
+                    "greater": [
+                      "@length(coalesce(body('Entities_-_Get_Hosts')?['Hosts'], json('[]')))",
+                      0
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Add_comment_to_incident_V3": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>@{variables('HtmlBody')}</p>"
+                    },
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              },
+              "azuremonitorlogs": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]",
+                "connectionName": "[variables('MonitorLogsConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity"
+                  }
+                }
+              }
+            }
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "DeviceContextWatchlistAlias": {
+            "value": "[parameters('DeviceContextWatchlistAlias')]"
+          },
+          "WorkspaceSubscriptionId": {
+            "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "WorkspaceResourceGroup": {
+            "value": "[parameters('WorkspaceResourceGroup')]"
+          },
+          "WorkspaceName": {
+            "value": "[parameters('WorkspaceName')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId]"
+    }
+  }
+}
