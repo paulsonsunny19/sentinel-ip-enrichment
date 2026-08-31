@@ -445,7 +445,7 @@
                     }
                   }
                 },
-                "Compose_RDAP": {
+                "HTTP_RDAP_Regional": {
                   "runAfter": {
                     "HTTP_RDAP": [
                       "Succeeded",
@@ -453,8 +453,25 @@
                       "TimedOut"
                     ]
                   },
+                  "type": "Http",
+                  "inputs": {
+                    "method": "GET",
+                    "uri": "@coalesce(outputs('HTTP_RDAP')?['headers']?['Location'], outputs('HTTP_RDAP')?['headers']?['location'], concat('https://rdap.org/ip/', items('For_each_IP_entity')?['Address']))",
+                    "headers": {
+                      "Accept": "application/rdap+json"
+                    }
+                  }
+                },
+                "Compose_RDAP": {
+                  "runAfter": {
+                    "HTTP_RDAP_Regional": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
                   "type": "Compose",
-                  "inputs": "@if(equals(outputs('HTTP_RDAP')?['statusCode'], 200), coalesce(body('HTTP_RDAP'), json('{}')), json('{}'))"
+                  "inputs": "@if(equals(outputs('HTTP_RDAP_Regional')?['statusCode'], 200), coalesce(body('HTTP_RDAP_Regional'), json('{}')), if(equals(outputs('HTTP_RDAP')?['statusCode'], 200), coalesce(body('HTTP_RDAP'), json('{}')), json('{}')))"
                 },
                 "Condition_AbuseIPDB_key_present": {
                   "runAfter": {
