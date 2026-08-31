@@ -3,11 +3,12 @@
   "contentVersion": "1.0.0.0",
   "metadata": {
     "title": "Enrich IP entities and post a Sentinel incident comment",
-    "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts, then posts one formatted incident comment.",
-    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, and appropriately licensed VirusTotal or Shodan access.",
+    "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts. An optional Microsoft Graph module queries Defender XDR Advanced Hunting data that is not ingested into the Sentinel workspace. Results are posted as one formatted incident comment.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, appropriately licensed VirusTotal or Shodan access, and Defender XDR licensing plus Microsoft Graph ThreatHunting.Read.All application permission for direct Advanced Hunting.",
     "postDeployment": [
       "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
       "Grant the same identity 'Log Analytics Reader' on the workspace.",
+      "If Defender Advanced Hunting is enabled, grant the managed identity Microsoft Graph application permission 'ThreatHunting.Read.All' using an app-role assignment and allow time for token propagation.",
       "Authorise both API connections (they are pre-set to managed identity).",
       "Attach the playbook to an automation rule, or run it on demand from an incident."
     ],
@@ -94,6 +95,22 @@
       "defaultValue": false,
       "metadata": {
         "description": "Enable only when the client has Shodan Enterprise permission for commercial InternetDB use. Disabled by default."
+      }
+    },
+    "EnableDefenderAdvancedHunting": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Query Defender XDR Advanced Hunting directly through Microsoft Graph. Requires the managed identity to have the ThreatHunting.Read.All application permission and relevant Defender licensing."
+      }
+    },
+    "DefenderLookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 30,
+      "metadata": {
+        "description": "Defender XDR Advanced Hunting lookback. Raw Defender hunting data is limited to a maximum of 30 days."
       }
     },
     "IPContextWatchlistAlias": {
@@ -191,6 +208,14 @@
             "EnableShodanInternetDB": {
               "type": "Bool",
               "defaultValue": false
+            },
+            "EnableDefenderAdvancedHunting": {
+              "type": "Bool",
+              "defaultValue": false
+            },
+            "DefenderLookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
             },
             "IPContextWatchlistAlias": {
               "type": "String",
@@ -321,9 +346,26 @@
                 ]
               }
             },
-            "Init_AbuseScore": {
+            "Init_DefenderHtml": {
               "runAfter": {
                 "Init_ShodanHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_AbuseScore": {
+              "runAfter": {
+                "Init_DefenderHtml": [
                   "Succeeded"
                 ]
               },
@@ -483,9 +525,21 @@
                     "value": ""
                   }
                 },
-                "Reset_AbuseScore": {
+                "Reset_DefenderHtml": {
                   "runAfter": {
                     "Reset_ShodanHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_AbuseScore": {
+                  "runAfter": {
+                    "Reset_DefenderHtml": [
                       "Succeeded"
                     ]
                   },
@@ -854,9 +908,94 @@
                     "actions": {}
                   }
                 },
-                "Run_KQL_signin_context": {
+                "Condition_Defender_XDR_enabled": {
                   "runAfter": {
                     "Condition_Shodan_licensed": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableDefenderAdvancedHunting')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Defender_XDR_Hunting": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
+                        "headers": {
+                          "Content-Type": "application/json; charset=utf-8"
+                        },
+                        "body": {
+                          "Query": "let ip = '@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}';\nlet look = @{parameters('DefenderLookbackDays')}d;\nunion isfuzzy=true\n(DeviceNetworkEvents\n | where Timestamp > ago(look)\n | where RemoteIP == ip or LocalIP == ip\n | summarize C = count(), Devices = make_set(DeviceName, 5),\n             Processes = make_set(InitiatingProcessFileName, 8),\n             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 5),\n             Ports = make_set(RemotePort, 10), Actions = make_set(ActionType, 6), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - endpoint network',\n           Detail = strcat(C, ' connection event(s) | devices: ', tostring(Devices),\n                           ' | processes: ', tostring(Processes), ' | users: ', tostring(Users),\n                           ' | remote ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last),\n(DeviceLogonEvents\n | where Timestamp > ago(look)\n | where RemoteIP == ip\n | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),\n             Devices = make_set(DeviceName, 5), Accounts = make_set(strcat(AccountDomain, '/', AccountName), 8),\n             LogonTypes = make_set(LogonType, 6), Actions = make_set(ActionType, 6), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - device logons',\n           Detail = strcat(C, ' logon event(s), ', Failures, ' failed | devices: ', tostring(Devices),\n                           ' | accounts: ', tostring(Accounts), ' | types: ', tostring(LogonTypes),\n                           ' | actions: ', tostring(Actions)), Last),\n(CloudAppEvents\n | where Timestamp > ago(look)\n | where IPAddress == ip\n | summarize C = count(), AdminOperations = countif(IsAdminOperation == true),\n             ProxyEvents = countif(IsAnonymousProxy == true), Accounts = make_set(coalesce(AccountId, AccountDisplayName), 8),\n             Applications = make_set(Application, 8), Activities = make_set(ActivityType, 8),\n             Actions = make_set(ActionType, 8), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - cloud apps',\n           Detail = strcat(C, ' activity event(s), ', AdminOperations, ' admin operation(s), ', ProxyEvents,\n                           ' anonymous-proxy event(s) | accounts: ', tostring(Accounts),\n                           ' | applications: ', tostring(Applications), ' | activities: ', tostring(Activities),\n                           ' | actions: ', tostring(Actions)), Last),\n(IdentityLogonEvents\n | where Timestamp > ago(look)\n | where IPAddress == ip or DestinationIPAddress == ip\n | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),\n             Accounts = make_set(coalesce(AccountUpn, AccountName), 8), Devices = make_set(DeviceName, 6),\n             Destinations = make_set(DestinationDeviceName, 6), Applications = make_set(Application, 6),\n             Protocols = make_set(Protocol, 6), Actions = make_set(ActionType, 8), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - identity logons',\n           Detail = strcat(C, ' authentication event(s), ', Failures, ' failed | accounts: ', tostring(Accounts),\n                           ' | devices: ', tostring(Devices), ' | destinations: ', tostring(Destinations),\n                           ' | applications: ', tostring(Applications), ' | protocols: ', tostring(Protocols),\n                           ' | actions: ', tostring(Actions)), Last),\n(UrlClickEvents\n | where Timestamp > ago(look)\n | where IPAddress == ip\n | summarize C = count(), ClickThrough = countif(IsClickedThrough == true), Users = make_set(AccountUpn, 8),\n             Workloads = make_set(Workload, 5), Actions = make_set(ActionType, 6),\n             Threats = make_set(ThreatTypes, 6), Urls = make_set(Url, 8), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - URL clicks',\n           Detail = strcat(C, ' click event(s), ', ClickThrough, ' clicked through | users: ', tostring(Users),\n                           ' | workloads: ', tostring(Workloads), ' | actions: ', tostring(Actions),\n                           ' | threats: ', tostring(Threats), ' | URLs: ', tostring(Urls)), Last),\n(EmailEvents\n | where Timestamp > ago(look)\n | where SenderIPv4 == ip or SenderIPv6 == ip\n | summarize C = count(), Recipients = dcount(RecipientEmailAddress), Senders = make_set(SenderFromAddress, 8),\n             Subjects = make_set(Subject, 6), Directions = make_set(EmailDirection, 4),\n             Delivery = make_set(DeliveryAction, 5), Threats = make_set(ThreatTypes, 6), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - email',\n           Detail = strcat(C, ' message event(s) to ', Recipients, ' recipient(s) | senders: ', tostring(Senders),\n                           ' | subjects: ', tostring(Subjects), ' | directions: ', tostring(Directions),\n                           ' | delivery: ', tostring(Delivery), ' | threats: ', tostring(Threats)), Last),\n(AlertEvidence\n | where Timestamp > ago(look)\n | where RemoteIP == ip or LocalIP == ip\n | summarize C = dcount(AlertId), Titles = make_set(Title, 8), Severities = make_set(Severity, 5),\n             Sources = make_set(ServiceSource, 6), Roles = make_set(EvidenceRole, 5), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - alert evidence',\n           Detail = strcat(C, ' alert(s) | titles: ', tostring(Titles), ' | severity: ', tostring(Severities),\n                           ' | services: ', tostring(Sources), ' | evidence roles: ', tostring(Roles)), Last)\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
+                          "Timespan": "@{concat('P', string(parameters('DefenderLookbackDays')), 'D')}"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs",
+                            "outputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Compose_Defender_Rows": {
+                      "runAfter": {
+                        "HTTP_Defender_XDR_Hunting": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(equals(outputs('HTTP_Defender_XDR_Hunting')?['statusCode'], 200), coalesce(body('HTTP_Defender_XDR_Hunting')?['results'], json('[]')), json('[]'))"
+                    },
+                    "Select_Defender_Rows": {
+                      "runAfter": {
+                        "Compose_Defender_Rows": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Select",
+                      "inputs": {
+                        "from": "@outputs('Compose_Defender_Rows')",
+                        "select": "<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{item()?['Source']}</b></td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Detail']}</td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Last']}</td></tr>"
+                      }
+                    },
+                    "Set_DefenderHtml": {
+                      "runAfter": {
+                        "Select_Defender_Rows": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderHtml",
+                        "value": "@if(equals(outputs('HTTP_Defender_XDR_Hunting')?['statusCode'], 200), concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender XDR Advanced Hunting</b> ', '<span style=\"font-weight:400;color:#605e5c\">(direct Microsoft Graph query; last ', string(parameters('DefenderLookbackDays')), ' days)</span></div>', '<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th>', '<th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>', if(empty(outputs('Compose_Defender_Rows')), '<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching Defender XDR Advanced Hunting records.</td></tr>', join(body('Select_Defender_Rows'), '')), '</table>'), concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender XDR Advanced Hunting</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">', '<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Query unavailable (HTTP ', string(coalesce(outputs('HTTP_Defender_XDR_Hunting')?['statusCode'], 'no response')), '). Confirm the managed identity has Microsoft Graph application permission <b>ThreatHunting.Read.All</b>, ', 'the relevant Defender products are licensed/onboarded, and the tenant has not reached its hunting quota.', '</td></tr></table>'))"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Run_KQL_signin_context": {
+                  "runAfter": {
+                    "Condition_Defender_XDR_enabled": [
                       "Succeeded"
                     ]
                   },
@@ -1055,7 +1194,7 @@
                   "type": "AppendToStringVariable",
                   "inputs": {
                     "name": "HtmlBody",
-                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nIP enrichment &mdash; <code>@{items('For_each_IP_entity')?['Address']}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Geolocation</b> <span style=\"font-weight:400;color:#605e5c\">(Microsoft Sentinel enrichment API &mdash; confidence 0-100 where shown)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organization'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organizationType'], '-'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">City</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['city'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['cityCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Country</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['country'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['countryCf'], '-'))})</span></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">State</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['state'], 'n/a'))} <span style=\"color:#605e5c\">(@{string(coalesce(outputs('Compose_Geo')?['stateCode'], '-'))}, cf @{string(coalesce(outputs('Compose_Geo')?['stateCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Continent</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['continent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Region</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['region'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Coordinates</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://www.bing.com/maps?cp=@{string(coalesce(outputs('Compose_Geo')?['latitude'], '0'))}~@{string(coalesce(outputs('Compose_Geo')?['longitude'], '0'))}&amp;lvl=9\">@{string(coalesce(outputs('Compose_Geo')?['latitude'], 'n/a'))}, @{string(coalesce(outputs('Compose_Geo')?['longitude'], 'n/a'))}</a></td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Network / ASN</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">ASN</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['asn'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Carrier</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['carrier'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Routing type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">RIR network</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['name'], 'n/a'))} (@{string(coalesce(outputs('Compose_RDAP')?['handle'], 'n/a'))})</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Range</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['startAddress'], 'n/a'))} &ndash; @{string(coalesce(outputs('Compose_RDAP')?['endAddress'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Allocation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['type'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Tor exit node</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), '<b style=\"color:#a4262c\">Yes &mdash; known Tor exit node</b>', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hosting / datacentre</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), '<b style=\"color:#a4262c\">Yes</b>', 'No')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Mobile / wireless</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'mobile'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'wireless'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'cellular')), 'Yes', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Geo lookup</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(empty(outputs('Compose_Geo')), '<span style=\"color:#a4262c\">failed &mdash; no geodata returned</span>', 'ok')}</td></tr>\n</table>\n\n@{variables('SigninHtml')}\n\n@{if(empty(concat(variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'))), '', concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Reputation</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">', variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'), '</table>'))}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No results &mdash; this IP was not observed in any queried table.</td></tr>'), join(body('Select_Insight_Rows'), ''))}\n</table>\n"
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nIP enrichment &mdash; <code>@{items('For_each_IP_entity')?['Address']}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Geolocation</b> <span style=\"font-weight:400;color:#605e5c\">(Microsoft Sentinel enrichment API &mdash; confidence 0-100 where shown)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organization'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Organization type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['organizationType'], '-'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">City</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['city'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['cityCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Country</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['country'], 'n/a'))} <span style=\"color:#605e5c\">(cf @{string(coalesce(outputs('Compose_Geo')?['countryCf'], '-'))})</span></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">State</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['state'], 'n/a'))} <span style=\"color:#605e5c\">(@{string(coalesce(outputs('Compose_Geo')?['stateCode'], '-'))}, cf @{string(coalesce(outputs('Compose_Geo')?['stateCf'], '-'))})</span></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Continent</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['continent'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Region</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['region'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Coordinates</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://www.bing.com/maps?cp=@{string(coalesce(outputs('Compose_Geo')?['latitude'], '0'))}~@{string(coalesce(outputs('Compose_Geo')?['longitude'], '0'))}&amp;lvl=9\">@{string(coalesce(outputs('Compose_Geo')?['latitude'], 'n/a'))}, @{string(coalesce(outputs('Compose_Geo')?['longitude'], 'n/a'))}</a></td></tr>\n</table>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Network / ASN</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">ASN</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['asn'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Carrier</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['carrier'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Routing type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], '-'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">RIR network</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['name'], 'n/a'))} (@{string(coalesce(outputs('Compose_RDAP')?['handle'], 'n/a'))})</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Range</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['startAddress'], 'n/a'))} &ndash; @{string(coalesce(outputs('Compose_RDAP')?['endAddress'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Allocation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(outputs('Compose_RDAP')?['type'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Tor exit node</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(contains(outputs('Compose_TorList'), items('For_each_IP_entity')?['Address']), '<b style=\"color:#a4262c\">Yes &mdash; known Tor exit node</b>', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hosting / datacentre</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'hosting'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'data center'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'datacenter'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'hosting')), '<b style=\"color:#a4262c\">Yes</b>', 'No')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Mobile / wireless</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(or(contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'mobile'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['ipRoutingType'], ''))), 'wireless'), contains(toLower(string(coalesce(outputs('Compose_Geo')?['organizationType'], ''))), 'cellular')), 'Yes', 'No')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Geo lookup</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(empty(outputs('Compose_Geo')), '<span style=\"color:#a4262c\">failed &mdash; no geodata returned</span>', 'ok')}</td></tr>\n</table>\n\n@{variables('SigninHtml')}\n\n@{if(empty(concat(variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'))), '', concat('<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Reputation</b></div><table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">', variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'), '</table>'))}\n\n@{variables('DefenderHtml')}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No results &mdash; this IP was not observed in any queried table.</td></tr>'), join(body('Select_Insight_Rows'), ''))}\n</table>\n"
                   }
                 }
               }
@@ -1145,6 +1284,12 @@
           },
           "EnableShodanInternetDB": {
             "value": "[parameters('EnableShodanInternetDB')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
           },
           "IPContextWatchlistAlias": {
             "value": "[parameters('IPContextWatchlistAlias')]"
