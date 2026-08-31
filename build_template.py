@@ -3,9 +3,10 @@
 import json, pathlib
 
 IP = "@{items('For_each_IP_entity')?['Address']}"
+KQL_IP = "@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}"
 LOOK = "@{parameters('LookbackDays')}d"
 
-KQL = f"""let ip = '{IP}';
+KQL = f"""let ip = '{KQL_IP}';
 let look = {LOOK};
 let TI = union isfuzzy=true
 (ThreatIntelligenceIndicator
@@ -59,7 +60,56 @@ union isfuzzy=true TI, Sightings, Alerts
 | order by Last desc
 | take 60"""
 
-SIGNIN_KQL = f"""let ip = '{IP}';
+EXTENDED_KQL = f"""let ip = '{KQL_IP}';
+let watchAlias = '@{{replace(parameters('IPContextWatchlistAlias'), decodeUriComponent('%27'), '')}}';
+let look = {LOOK};
+let ClientContext = union isfuzzy=true
+(Watchlist
+ | where isnotempty(watchAlias)
+ | where WatchlistAlias == watchAlias and SearchKey == ip
+ | summarize arg_max(TimeGenerated, *) by SearchKey
+ | extend W = todynamic(WatchlistItem)
+ | extend Classification = coalesce(tostring(W.Classification), tostring(W.Category), 'unclassified')
+ | project Source = iff(tolower(Classification) in ('knownbad', 'malicious', 'block'), 'Client IP context - high', 'Client IP context'),
+           Detail = strcat('classification: ', Classification,
+                           ' | owner: ', coalesce(tostring(W.Owner), 'n/a'),
+                           ' | ', coalesce(tostring(W.Description), tostring(W.Notes), 'no description'),
+                           ' | override: ', coalesce(tostring(W.RiskOverride), 'none'),
+                           ' | valid until: ', coalesce(tostring(W.ValidUntil), 'not set')),
+           Last = coalesce(LastUpdatedTimeUTC, TimeGenerated));
+let Ueba = union isfuzzy=true
+(BehaviorAnalytics
+ | where TimeGenerated > ago(look)
+ | where SourceIPAddress == ip or DestinationIPAddress == ip
+ | top 5 by InvestigationPriority desc
+ | project Source = iff(InvestigationPriority >= 8, 'UEBA high anomaly', 'UEBA'),
+           Detail = strcat('priority ', InvestigationPriority, '/10 | ', ActivityType, ' / ', ActionType,
+                           ' | user: ', coalesce(UserPrincipalName, UserName, 'n/a'),
+                           ' | source: ', EventSource),
+           Last = TimeGenerated);
+let Network = union isfuzzy=true
+(_Im_NetworkSession(starttime=ago(look), endtime=now(), ipaddr_has_any_prefix=pack_array(ip))
+ | where SrcIpAddr == ip or DstIpAddr == ip
+ | summarize C = sum(EventCount), Devices = make_set(coalesce(SrcHostname, DstHostname, Dvc), 5),
+             Ports = make_set(DstPortNumber, 8), Actions = make_set(DvcAction, 5), Last = max(TimeGenerated)
+ | where C > 0
+ | project Source = 'ASIM network',
+           Detail = strcat(C, ' session(s) | devices: ', tostring(Devices),
+                           ' | destination ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last);
+let Dns = union isfuzzy=true
+(_Im_Dns(starttime=ago(look), endtime=now(), response_has_ipv4=ip)
+ | summarize C = count(), Domains = make_set(DnsQuery, 10),
+             Clients = make_set(coalesce(SrcHostname, SrcIpAddr), 5), Last = max(TimeGenerated)
+ | where C > 0
+ | project Source = 'ASIM DNS',
+           Detail = strcat(C, ' response(s) | domains: ', tostring(Domains),
+                           ' | clients: ', tostring(Clients)), Last);
+union isfuzzy=true ClientContext, Ueba, Network, Dns
+| where isnotempty(Source)
+| order by Last desc
+| take 40"""
+
+SIGNIN_KQL = f"""let ip = '{KQL_IP}';
 let look = {LOOK};
 let hist = 90d;
 let priorCount = toscalar(SigninLogs | where TimeGenerated between (ago(hist) .. ago(look)) | where IPAddress == ip | summarize count());
@@ -167,7 +217,7 @@ IP enrichment &mdash; <code>{IP}</code>
 
 @{{variables('SigninHtml')}}
 
-@{{if(and(empty(variables('AbuseHtml')), empty(variables('VTHtml'))), '', concat('<div style="{H4}"><b>Reputation</b></div><table style="{TBL}">', variables('AbuseHtml'), variables('VTHtml'), '</table>'))}}
+@{{if(empty(concat(variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'))), '', concat('<div style="{H4}"><b>Reputation</b></div><table style="{TBL}">', variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'), '</table>'))}}
 
 <div style="{H4}"><b>Workspace insights &mdash; last @{{parameters('LookbackDays')}} days</b></div>
 <table style="{TBL}">
@@ -176,33 +226,61 @@ IP enrichment &mdash; <code>{IP}</code>
 </table>
 """
 
-# Reputation rows are action-input template strings (so @{...} is interpolated),
-# with the whole payload wrapped in one if() that degrades to "lookup failed".
-ABUSE_ROW = (
-    f'<tr><th style="{TH}">AbuseIPDB</th><td style="{TD}">'
-    "@{if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), concat("
-    "'Confidence of abuse: <b>', " + ab("abuseConfidenceScore", "0") + ", '%</b>',"
+# Full workflow expressions; do not nest @{...} interpolation inside @if(...).
+ABUSE_VALUE = (
+    "@if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), concat("
+    f"'<tr><th style=\"{TH}\">AbuseIPDB</th><td style=\"{TD}\">Confidence of abuse: <b>', "
+    + ab("abuseConfidenceScore", "0") + ", '%</b>',"
     "' &nbsp;|&nbsp; ', " + ab("totalReports", "0") + ", ' report(s) from ', " + ab("numDistinctUsers", "0") + ", ' reporter(s)',"
     "' &nbsp;|&nbsp; usage: ', " + ab("usageType") + ","
     "' &nbsp;|&nbsp; domain: ', " + ab("domain") + ","
     "' &nbsp;|&nbsp; Tor: ', " + ab("isTor", "false") + ","
-    "' &nbsp;|&nbsp; last report: ', " + ab("lastReportedAt", "'never'") + "), "
-    "'lookup failed or rate limited')}"
-    "</td></tr>"
+    "' &nbsp;|&nbsp; last report: ', " + ab("lastReportedAt", "'never'") + ", '</td></tr>'), "
+    f"'<tr><th style=\"{TH}\">AbuseIPDB</th><td style=\"{TD}\">lookup failed or rate limited</td></tr>')"
 )
 
-VT_ROW = (
-    f'<tr><th style="{TH}">VirusTotal</th><td style="{TD}">'
-    "@{if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), concat("
-    "'<b>', " + vt("last_analysis_stats", "malicious", default="0") + ", '</b> malicious / ',"
+VT_VALUE = (
+    "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), concat("
+    f"'<tr><th style=\"{TH}\">VirusTotal</th><td style=\"{TD}\"><b>', "
+    + vt("last_analysis_stats", "malicious", default="0") + ", '</b> malicious / ',"
     + vt("last_analysis_stats", "suspicious", default="0") + ", ' suspicious / ',"
     + vt("last_analysis_stats", "harmless", default="0") + ", ' harmless',"
     "' &nbsp;|&nbsp; community reputation: ', " + vt("reputation", default="0") + ","
     "' &nbsp;|&nbsp; network: ', " + vt("network") + ","
-    "' &nbsp;|&nbsp; owner: ', " + vt("as_owner") + "), "
-    "'lookup failed or rate limited')}"
-    f' &nbsp;|&nbsp; <a href="https://www.virustotal.com/gui/ip-address/{IP}">open in VirusTotal</a>'
-    "</td></tr>"
+    "' &nbsp;|&nbsp; owner: ', " + vt("as_owner") + ","
+    "' &nbsp;|&nbsp; <a href=\"https://www.virustotal.com/gui/ip-address/', "
+    "items('For_each_IP_entity')?['Address'], '\">open in VirusTotal</a></td></tr>'), "
+    f"'<tr><th style=\"{TH}\">VirusTotal</th><td style=\"{TD}\">lookup failed or rate limited</td></tr>')"
+)
+
+GREYNOISE_VALUE = (
+    "@if(equals(outputs('HTTP_GreyNoise')?['statusCode'], 200), concat("
+    f"'<tr><th style=\"{TH}\">GreyNoise Community</th><td style=\"{TD}\">classification: <b>', "
+    "string(coalesce(body('HTTP_GreyNoise')?['classification'], 'unknown')), '</b>', "
+    "' &nbsp;|&nbsp; internet scanner noise: ', string(coalesce(body('HTTP_GreyNoise')?['noise'], false)), "
+    "' &nbsp;|&nbsp; RIOT service: ', string(coalesce(body('HTTP_GreyNoise')?['riot'], false)), "
+    "' &nbsp;|&nbsp; actor/service: ', string(coalesce(body('HTTP_GreyNoise')?['name'], 'n/a')), "
+    "' &nbsp;|&nbsp; last seen: ', string(coalesce(body('HTTP_GreyNoise')?['last_seen'], 'n/a')), "
+    "' &nbsp;|&nbsp; <a href=\"', string(coalesce(body('HTTP_GreyNoise')?['link'], 'https://viz.greynoise.io/')), "
+    "'\">open in GreyNoise</a></td></tr>'), "
+    "if(equals(outputs('HTTP_GreyNoise')?['statusCode'], 404), "
+    f"'<tr><th style=\"{TH}\">GreyNoise Community</th><td style=\"{TD}\">not observed in the Community dataset</td></tr>', "
+    f"'<tr><th style=\"{TH}\">GreyNoise Community</th><td style=\"{TD}\">lookup unavailable or rate limited</td></tr>'))"
+)
+
+SHODAN_VALUE = (
+    "@if(equals(outputs('HTTP_Shodan_InternetDB')?['statusCode'], 200), concat("
+    f"'<tr><th style=\"{TH}\">Shodan InternetDB</th><td style=\"{TD}\">ports: ', "
+    "string(coalesce(body('HTTP_Shodan_InternetDB')?['ports'], json('[]'))), "
+    "' &nbsp;|&nbsp; tags: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['tags'], json('[]'))), "
+    "' &nbsp;|&nbsp; hostnames: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['hostnames'], json('[]'))), "
+    "' &nbsp;|&nbsp; vulnerabilities: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['vulns'], json('[]'))), "
+    "' &nbsp;|&nbsp; CPEs: ', string(coalesce(body('HTTP_Shodan_InternetDB')?['cpes'], json('[]'))), "
+    "' &nbsp;|&nbsp; <a href=\"https://www.shodan.io/host/', items('For_each_IP_entity')?['Address'], "
+    "'\">open in Shodan</a></td></tr>'), "
+    "if(equals(outputs('HTTP_Shodan_InternetDB')?['statusCode'], 404), "
+    f"'<tr><th style=\"{TH}\">Shodan InternetDB</th><td style=\"{TD}\">no InternetDB record</td></tr>', "
+    f"'<tr><th style=\"{TH}\">Shodan InternetDB</th><td style=\"{TD}\">lookup unavailable</td></tr>'))"
 )
 
 # ---- sign-in context block (rendered only when a sign-in from this IP exists) --------
@@ -243,6 +321,7 @@ VERDICT = ("@if(or(greater(length(body('Filter_TI')), 0), greater(variables('VTM
            "equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'high')), 'HIGH', "
            "if(or(" + IS_HOSTING_EXPR + ", "
            "greaterOrEquals(variables('AbuseScore'), 25), "
+           "equals(variables('GreyNoiseClassification'), 'malicious'), "
            "equals(toLower(string(coalesce(outputs('Compose_Signin')?['RiskLevel'], ''))), 'medium'), "
            "startsWith(string(coalesce(outputs('Compose_Signin')?['IPAddressStatus'], '')), 'Unknown')), "
            "'MEDIUM', 'LOW'))")
@@ -253,6 +332,7 @@ VERDICT_STYLE = ("@if(equals(outputs('Compose_Verdict'), 'HIGH'), '%s#a4262c', "
 
 VERDICT_REASON = ("@concat('Signals: ', string(length(body('Filter_TI'))), ' TI match(es) &middot; AbuseIPDB ', "
                   "string(variables('AbuseScore')), '% &middot; VT malicious ', string(variables('VTMalicious')), "
+                  "' &middot; GreyNoise ', variables('GreyNoiseClassification'), "
                   "' &middot; Tor exit: ', if(" + IS_TOR_EXPR + ", 'yes', 'no'), "
                   "' &middot; ', string(length(outputs('Compose_Rows'))), ' workspace insight row(s)')")
 
@@ -273,6 +353,9 @@ definition = {
         "TorExitListUrl": {"type": "String", "defaultValue": "https://check.torproject.org/torbulkexitlist"},
         "AbuseIPDBApiKey": {"type": "SecureString", "defaultValue": ""},
         "VirusTotalApiKey": {"type": "SecureString", "defaultValue": ""},
+        "GreyNoiseApiKey": {"type": "SecureString", "defaultValue": ""},
+        "EnableShodanInternetDB": {"type": "Bool", "defaultValue": False},
+        "IPContextWatchlistAlias": {"type": "String", "defaultValue": "IPContext"},
         "WorkspaceSubscriptionId": {"type": "String"},
         "WorkspaceResourceGroup": {"type": "String"},
         "WorkspaceName": {"type": "String"},
@@ -301,8 +384,20 @@ definition = {
             "runAfter": after("Init_AbuseHtml"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "VTHtml", "type": "string", "value": ""}]},
         },
-        "Init_AbuseScore": {
+        "Init_GreyNoiseHtml": {
             "runAfter": after("Init_VTHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "GreyNoiseHtml", "type": "string", "value": ""}]},
+        },
+        "Init_GreyNoiseClassification": {
+            "runAfter": after("Init_GreyNoiseHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "GreyNoiseClassification", "type": "string", "value": "unknown"}]},
+        },
+        "Init_ShodanHtml": {
+            "runAfter": after("Init_GreyNoiseClassification"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "ShodanHtml", "type": "string", "value": ""}]},
+        },
+        "Init_AbuseScore": {
+            "runAfter": after("Init_ShodanHtml"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "AbuseScore", "type": "integer", "value": 0}]},
         },
         "Init_VTMalicious": {
@@ -350,8 +445,20 @@ definition = {
                     "runAfter": after("Reset_AbuseHtml"), "type": "SetVariable",
                     "inputs": {"name": "VTHtml", "value": ""},
                 },
-                "Reset_AbuseScore": {
+                "Reset_GreyNoiseHtml": {
                     "runAfter": after("Reset_VTHtml"), "type": "SetVariable",
+                    "inputs": {"name": "GreyNoiseHtml", "value": ""},
+                },
+                "Reset_GreyNoiseClassification": {
+                    "runAfter": after("Reset_GreyNoiseHtml"), "type": "SetVariable",
+                    "inputs": {"name": "GreyNoiseClassification", "value": "unknown"},
+                },
+                "Reset_ShodanHtml": {
+                    "runAfter": after("Reset_GreyNoiseClassification"), "type": "SetVariable",
+                    "inputs": {"name": "ShodanHtml", "value": ""},
+                },
+                "Reset_AbuseScore": {
+                    "runAfter": after("Reset_ShodanHtml"), "type": "SetVariable",
                     "inputs": {"name": "AbuseScore", "value": 0},
                 },
                 "Reset_VTMalicious": {
@@ -396,11 +503,24 @@ definition = {
                         "headers": {"Accept": "application/rdap+json"},
                     },
                 },
-                "Compose_RDAP": {
+                "HTTP_RDAP_Regional": {
                     "runAfter": after("HTTP_RDAP", states=("Succeeded", "Failed", "TimedOut")),
+                    "type": "Http",
+                    "inputs": {
+                        "method": "GET",
+                        "uri": ("@coalesce(outputs('HTTP_RDAP')?['headers']?['Location'], "
+                                "outputs('HTTP_RDAP')?['headers']?['location'], "
+                                "concat('https://rdap.org/ip/', items('For_each_IP_entity')?['Address']))"),
+                        "headers": {"Accept": "application/rdap+json"},
+                    },
+                },
+                "Compose_RDAP": {
+                    "runAfter": after("HTTP_RDAP_Regional", states=("Succeeded", "Failed", "TimedOut")),
                     "type": "Compose",
-                    "inputs": ("@if(equals(outputs('HTTP_RDAP')?['statusCode'], 200), "
-                               "coalesce(body('HTTP_RDAP'), json('{}')), json('{}'))"),
+                    "inputs": ("@if(equals(outputs('HTTP_RDAP_Regional')?['statusCode'], 200), "
+                               "coalesce(body('HTTP_RDAP_Regional'), json('{}')), "
+                               "if(equals(outputs('HTTP_RDAP')?['statusCode'], 200), "
+                               "coalesce(body('HTTP_RDAP'), json('{}')), json('{}')))"),
                 },
                 # AbuseIPDB (optional)
                 "Condition_AbuseIPDB_key_present": {
@@ -418,6 +538,7 @@ definition = {
                                 },
                                 "headers": {"Key": "@parameters('AbuseIPDBApiKey')", "Accept": "application/json"},
                             },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
                         },
                         "Set_AbuseScore": {
                             "runAfter": after("HTTP_AbuseIPDB", states=("Succeeded", "Failed", "TimedOut")),
@@ -430,13 +551,7 @@ definition = {
                         },
                         "Set_AbuseHtml": {
                             "runAfter": after("Set_AbuseScore"), "type": "SetVariable",
-                            "inputs": {
-                                "name": "AbuseHtml",
-                                "value": ("@if(equals(outputs('HTTP_AbuseIPDB')?['statusCode'], 200), "
-                                          f"'{ABUSE_ROW}', "
-                                          f"'<tr><th style=\"{TH}\">AbuseIPDB</th>"
-                                          f"<td style=\"{TD}\">lookup failed</td></tr>')"),
-                            },
+                            "inputs": {"name": "AbuseHtml", "value": ABUSE_VALUE},
                         },
                     },
                     "else": {"actions": {}},
@@ -453,6 +568,7 @@ definition = {
                                 "uri": "https://www.virustotal.com/api/v3/ip_addresses/@{items('For_each_IP_entity')?['Address']}",
                                 "headers": {"x-apikey": "@parameters('VirusTotalApiKey')"},
                             },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
                         },
                         "Set_VTMalicious": {
                             "runAfter": after("HTTP_VirusTotal", states=("Succeeded", "Failed", "TimedOut")),
@@ -465,20 +581,66 @@ definition = {
                         },
                         "Set_VTHtml": {
                             "runAfter": after("Set_VTMalicious"), "type": "SetVariable",
+                            "inputs": {"name": "VTHtml", "value": VT_VALUE},
+                        },
+                    },
+                    "else": {"actions": {}},
+                },
+                # GreyNoise Community (optional; leave the key blank to disable)
+                "Condition_GreyNoise_key_present": {
+                    "runAfter": after("Condition_VirusTotal_key_present"), "type": "If",
+                    "expression": {"and": [{"not": {"equals": ["@parameters('GreyNoiseApiKey')", ""]}}]},
+                    "actions": {
+                        "HTTP_GreyNoise": {
+                            "runAfter": {}, "type": "Http",
                             "inputs": {
-                                "name": "VTHtml",
-                                "value": ("@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), "
-                                          f"'{VT_ROW}', "
-                                          f"'<tr><th style=\"{TH}\">VirusTotal</th>"
-                                          f"<td style=\"{TD}\">lookup failed</td></tr>')"),
+                                "method": "GET",
+                                "uri": "https://api.greynoise.io/v3/community/@{items('For_each_IP_entity')?['Address']}",
+                                "headers": {"key": "@parameters('GreyNoiseApiKey')", "Accept": "application/json"},
                             },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
+                        },
+                        "Set_GreyNoiseClassification": {
+                            "runAfter": after("HTTP_GreyNoise", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "GreyNoiseClassification",
+                                "value": ("@if(equals(outputs('HTTP_GreyNoise')?['statusCode'], 200), "
+                                          "toLower(string(coalesce(body('HTTP_GreyNoise')?['classification'], 'unknown'))), "
+                                          "'unknown')"),
+                            },
+                        },
+                        "Set_GreyNoiseHtml": {
+                            "runAfter": after("Set_GreyNoiseClassification"), "type": "SetVariable",
+                            "inputs": {"name": "GreyNoiseHtml", "value": GREYNOISE_VALUE},
+                        },
+                    },
+                    "else": {"actions": {}},
+                },
+                # Shodan InternetDB is non-commercial unless covered by Shodan Enterprise.
+                "Condition_Shodan_licensed": {
+                    "runAfter": after("Condition_GreyNoise_key_present"), "type": "If",
+                    "expression": {"and": [{"equals": ["@parameters('EnableShodanInternetDB')", True]}]},
+                    "actions": {
+                        "HTTP_Shodan_InternetDB": {
+                            "runAfter": {}, "type": "Http",
+                            "inputs": {
+                                "method": "GET",
+                                "uri": "https://internetdb.shodan.io/@{items('For_each_IP_entity')?['Address']}",
+                                "headers": {"Accept": "application/json"},
+                            },
+                        },
+                        "Set_ShodanHtml": {
+                            "runAfter": after("HTTP_Shodan_InternetDB", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "SetVariable",
+                            "inputs": {"name": "ShodanHtml", "value": SHODAN_VALUE},
                         },
                     },
                     "else": {"actions": {}},
                 },
                 # most recent Entra sign-in from this IP (device / OS / browser / risk)
                 "Run_KQL_signin_context": {
-                    "runAfter": after("Condition_VirusTotal_key_present"), "type": "ApiConnection",
+                    "runAfter": after("Condition_Shodan_licensed"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": LA_CONN}},
                         "method": "post",
@@ -542,11 +704,31 @@ definition = {
                         },
                     },
                 },
-                "Compose_Rows": {
+                "Run_KQL_extended_context": {
                     "runAfter": after("Run_KQL_insights", states=("Succeeded", "Failed", "TimedOut")),
+                    "type": "ApiConnection",
+                    "inputs": {
+                        "host": {"connection": {"name": LA_CONN}},
+                        "method": "post",
+                        "body": EXTENDED_KQL,
+                        "path": "/queryData",
+                        "queries": {
+                            "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                            "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                            "resourcetype": "Log Analytics Workspace",
+                            "resourcename": "@parameters('WorkspaceName')",
+                            "timerange": "Set in query",
+                        },
+                    },
+                },
+                "Compose_Rows": {
+                    "runAfter": after("Run_KQL_extended_context", states=("Succeeded", "Failed", "TimedOut")),
                     "type": "Compose",
-                    "inputs": ("@if(equals(actions('Run_KQL_insights')?['status'], 'Succeeded'), "
-                               "coalesce(body('Run_KQL_insights')?['value'], json('[]')), json('[]'))"),
+                    "inputs": ("@union("
+                               "if(equals(actions('Run_KQL_insights')?['status'], 'Succeeded'), "
+                               "coalesce(body('Run_KQL_insights')?['value'], json('[]')), json('[]')), "
+                               "if(equals(actions('Run_KQL_extended_context')?['status'], 'Succeeded'), "
+                               "coalesce(body('Run_KQL_extended_context')?['value'], json('[]')), json('[]')))"),
                 },
                 "Filter_TI": {
                     "runAfter": after("Compose_Rows"), "type": "Query",
@@ -608,8 +790,8 @@ template = {
     "contentVersion": "1.0.0.0",
     "metadata": {
         "title": "Enrich IP entities and post a Sentinel incident comment",
-        "description": "STAT-style IP enrichment built on sources that are free for business use. For every IP entity on the incident it collects geolocation and ASN from Sentinel's own enrichment API, RIR registration via RDAP, Tor exit-node membership, optional AbuseIPDB reputation, Entra sign-in context (device trust, OS, browser, user agent, risk), and workspace-native insights (threat intel matches, sightings across sign-in/activity/network tables, prior alerts), then writes one formatted HTML comment back to the incident.",
-        "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: a free AbuseIPDB API key.",
+        "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts, then posts one formatted incident comment.",
+        "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, and appropriately licensed VirusTotal or Shodan access.",
         "postDeployment": [
             "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
             "Grant the same identity 'Log Analytics Reader' on the workspace.",
@@ -638,6 +820,12 @@ template = {
                             "metadata": {"description": "Free AbuseIPDB key (1,000 checks/day). Leave blank to skip the AbuseIPDB row."}},
         "VirusTotalApiKey": {"type": "securestring", "defaultValue": "",
                              "metadata": {"description": "OPTIONAL and OFF by default. VirusTotal's free public API forbids use in business workflows, so supply a Premium key or leave this blank."}},
+        "GreyNoiseApiKey": {"type": "securestring", "defaultValue": "",
+                            "metadata": {"description": "Optional GreyNoise Community API key. Leave blank to disable and avoid unauthenticated rate limits."}},
+        "EnableShodanInternetDB": {"type": "bool", "defaultValue": False,
+                                   "metadata": {"description": "Enable only when the client has Shodan Enterprise permission for commercial InternetDB use. Disabled by default."}},
+        "IPContextWatchlistAlias": {"type": "string", "defaultValue": "IPContext",
+                                    "metadata": {"description": "Optional Sentinel watchlist alias. Use SearchKey for the IP and recommended columns Classification, Owner, Description, RiskOverride and ValidUntil. Set blank to disable."}},
     },
     "variables": {
         "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
@@ -662,7 +850,7 @@ template = {
             "properties": {
                 "displayName": "[variables('MonitorLogsConnectionName')]",
                 "customParameterValues": {},
-                "parameterValueType": "Alternative",
+                "parameterValueSet": {"name": "managedIdentityAuth", "values": {}},
                 "api": {"id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"},
             },
         },
@@ -701,6 +889,9 @@ template = {
                     "TorExitListUrl": {"value": "[parameters('TorExitListUrl')]"},
                     "AbuseIPDBApiKey": {"value": "[parameters('AbuseIPDBApiKey')]"},
                     "VirusTotalApiKey": {"value": "[parameters('VirusTotalApiKey')]"},
+                    "GreyNoiseApiKey": {"value": "[parameters('GreyNoiseApiKey')]"},
+                    "EnableShodanInternetDB": {"value": "[parameters('EnableShodanInternetDB')]"},
+                    "IPContextWatchlistAlias": {"value": "[parameters('IPContextWatchlistAlias')]"},
                     "WorkspaceSubscriptionId": {"value": "[parameters('WorkspaceSubscriptionId')]"},
                     "WorkspaceResourceGroup": {"value": "[parameters('WorkspaceResourceGroup')]"},
                     "WorkspaceName": {"value": "[parameters('WorkspaceName')]"},
