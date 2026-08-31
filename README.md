@@ -1,7 +1,8 @@
 # Sentinel IP Enrichment → Incident Comment
 
-STAT-style IP enrichment for Microsoft Sentinel, built **only on sources that are free and licensed
-for business use**. For every IP entity on an incident it writes a single formatted comment.
+License-aware IP enrichment for Microsoft Sentinel. For every IP entity on an incident it writes a
+single formatted comment. Business-safe sources are enabled by default; sources that need a paid or
+client-specific entitlement are explicit opt-ins.
 
 ## Sources and what they cost
 
@@ -11,11 +12,14 @@ for business use**. For every IP entity on an incident it writes a single format
 | **RDAP** (`rdap.org`) — RIR network, range, allocation type | free | none | none published | public registry data |
 | **Tor bulk exit list** — anonymiser detection | free | none | fetched once per run | public list published by the Tor Project |
 | **AbuseIPDB** — abuse confidence, reports, usage type | free tier | free key | 1,000 checks/day | free plan carries no commercial-use prohibition |
+| **GreyNoise Community** — internet scanner/noise, RIOT, classification | free Community tier | Community key | 50 searches/week with a free key | optional; blank key skips the lookup |
+| **Client IP context watchlist** — classification, owner, notes, override | included | none (managed identity) | your workspace | optional `IPContext` watchlist; your own data |
+| **UEBA / ASIM network / ASIM DNS** — anomalous use and tenant telemetry | included when those features/data connectors are present | none (managed identity) | your workspace | your own data; missing tables/parsers fail open |
 | **Workspace KQL** — TI, sightings, prior alerts, sign-in context | included | none (managed identity) | your workspace | your own data |
 | VirusTotal | **off by default** | Premium key | 500/day, 4/min on the free key | the free public API forbids use "in business workflows that do not contribute new files" — a SOC enrichment playbook is exactly that, so leave this blank unless you hold a Premium key |
+| Shodan InternetDB | **off by default** | none | public service | free InternetDB use is non-commercial; enable only when the client has Shodan Enterprise permission |
 
-Deliberately *not* used: **ip-api.com** (free tier is non-commercial only) and **GreyNoise Community**
-(50 lookups/week on the free tier, too low for a playbook).
+Deliberately *not* used: **ip-api.com** (free tier is non-commercial only).
 
 ## What lands in the comment
 
@@ -24,13 +28,13 @@ Deliberately *not* used: **ip-api.com** (free tier is non-commercial only) and *
 | **Geolocation** | Organization + organization type, city, country, state (+ state code), continent, region, coordinates with map link — each with Microsoft's 0–100 confidence rating where provided |
 | **Network / ASN** | ASN, carrier, IP routing type, RIR network name/handle/range/allocation type, Tor exit node, hosting/datacentre, mobile/wireless |
 | **Sign-in context** | Most recent Entra sign-in from this IP: user, app, result, IP address status (known/unknown), trusted named location, known-IP history, country code, proxy and hosting flags, device trust type, device name/ID, compliant + managed, OS, browser, full user agent, sign-in risk level/state/detail, risk events, Conditional Access result, auth requirement |
-| **Reputation** | AbuseIPDB confidence, report count, reporters, usage type, Tor flag, last report (skipped entirely if you supply no key) |
-| **Workspace insights** | Threat-intel matches, sightings across SigninLogs, non-interactive sign-ins, AzureActivity, OfficeActivity, SecurityEvent, CommonSecurityLog, DeviceNetworkEvents, VMConnection, W3CIISLog, AWSCloudTrail, and prior alerts referencing the IP |
+| **Reputation** | AbuseIPDB, optional GreyNoise Community, optional licensed VirusTotal and Shodan InternetDB |
+| **Workspace insights** | Client `IPContext` watchlist, UEBA, ASIM network/DNS, threat-intel matches, sightings across SigninLogs, non-interactive sign-ins, AzureActivity, OfficeActivity, SecurityEvent, CommonSecurityLog, DeviceNetworkEvents, VMConnection, W3CIISLog, AWSCloudTrail, and prior alerts referencing the IP |
 
 Each IP gets a **HIGH / MEDIUM / LOW** chip:
 
 - **HIGH** — a TI match, Tor exit node, AbuseIPDB ≥ 50, VT malicious > 0, or sign-in risk `high`
-- **MEDIUM** — hosting/datacentre, AbuseIPDB ≥ 25, sign-in risk `medium`, or an unknown IP address
+- **MEDIUM** — GreyNoise `malicious`, hosting/datacentre, AbuseIPDB ≥ 25, sign-in risk `medium`, or an unknown IP address
 - **LOW** — none of the above
 
 ## Files
@@ -55,8 +59,9 @@ az deployment group create \
   --parameters WorkspaceName=bfree-sentinel-law LookbackDays=14
 ```
 
-Everything works with no keys at all. Add `AbuseIPDBApiKey=<key>` once you've registered a free
-account if you want the reputation row.
+Everything works with no keys at all. Add `AbuseIPDBApiKey=<key>` and/or
+`GreyNoiseApiKey=<key>` if you want those reputation rows. Do not enable Shodan or supply a
+VirusTotal key until the client's licences cover this business workflow.
 
 **2. Grant the managed identity two roles.** The deployment outputs `ManagedIdentityPrincipalId`.
 
@@ -107,6 +112,17 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
 | `TorExitListUrl` | Tor Project bulk exit list | point at an internal mirror if outbound access is restricted |
 | `AbuseIPDBApiKey` | *(empty)* | free key, 1,000 checks/day; blank skips the row |
 | `VirusTotalApiKey` | *(empty)* | leave blank — see the licence note above |
+| `GreyNoiseApiKey` | *(empty)* | Community key; blank skips the row |
+| `EnableShodanInternetDB` | `false` | enable only with Shodan Enterprise permission for commercial use |
+| `IPContextWatchlistAlias` | `IPContext` | set blank to disable; `SearchKey` must contain the IP |
+
+## Optional client IP watchlist
+
+Create a Sentinel watchlist with alias `IPContext` (or change the parameter). Set `SearchKey` to the
+IP address and use these recommended CSV columns: `Classification`, `Owner`, `Description`,
+`RiskOverride`, and `ValidUntil`. The playbook treats `knownbad`, `malicious`, and `block`
+classifications as a highlighted workspace row; it does not automatically override the incident
+severity or the external reputation verdict.
 
 ## Things worth knowing
 
@@ -125,9 +141,11 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
   sign-ins from the same IP between 90 days ago and the start of the lookback window: any prior
   sign-in ⇒ *Known IP address*, plus a trusted named location ⇒ *Known and trusted*. Change the
   `hist = 90d` line to move that baseline.
-- **Watchlist insights** aren't in v1 because `_GetWatchlist()` throws on a watchlist that doesn't
-  exist, which would take the whole query with it. A ready snippet sits at the bottom of
-  `kql/IP-Insights.kql` — add it to the final `union` once you name a watchlist you actually have.
+- **No extra Azure RBAC is required for the new tenant enrichments.** `Log Analytics Reader` covers
+  the Watchlist, BehaviorAnalytics and normalized ASIM queries. UEBA and the relevant data
+  connectors/parsers still need to be enabled for those rows to return data.
+- **API-key inputs are secured in run history.** AbuseIPDB, VirusTotal, and GreyNoise HTTP actions
+  use secure inputs so their headers aren't displayed to operators viewing a run.
 - **Private/internal IPs** return no geodata. If most of your entities are RFC1918, filter them at the
   top of the loop.
 - **Edit `build_template.py`, not `azuredeploy.json`.** The JSON is generated; the HTML and KQL are
