@@ -4,6 +4,12 @@ License-aware IP enrichment for Microsoft Sentinel. For every IP entity on an in
 single formatted comment. Business-safe sources are enabled by default; sources that need a paid or
 client-specific entitlement are explicit opt-ins.
 
+This repository also contains a separate **device enrichment playbook** for Sentinel Host entities.
+It queries Defender XDR device inventory, EDR health, alerts, Vulnerability Management posture,
+logons, network and process activity, plus Sentinel workspace context. See
+[`README-DEVICE.md`](README-DEVICE.md) and deploy `azuredeploy-device.json`. The IP and device
+playbooks are independent and can both be attached to the same incident automation rule.
+
 ## Sources and what they cost
 
 | Source | Cost | Key | Limit | Licence note |
@@ -49,6 +55,11 @@ kql/IP-Insights.kql               the workspace-insights query, standalone, for 
 kql/Defender-XDR-IP-Insights.kql  the direct Defender query, for testing in Advanced Hunting
 preview.html                      what the comment looks like, with sample data
 make_preview.py                   regenerates preview.html
+
+azuredeploy-device.json                    separate Host/device enrichment ARM template
+build_device_template.py                   generator for the device template
+kql/Defender-XDR-Device-Enrichment.kql     standalone device Advanced Hunting validation query
+README-DEVICE.md                           device sources, verdict logic, permissions and deployment
 ```
 
 ## Deploy (about 10 minutes)
