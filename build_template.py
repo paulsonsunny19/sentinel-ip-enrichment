@@ -109,6 +109,93 @@ union isfuzzy=true ClientContext, Ueba, Network, Dns
 | order by Last desc
 | take 40"""
 
+DEFENDER_KQL = f"""let ip = '{KQL_IP}';
+let look = @{{parameters('DefenderLookbackDays')}}d;
+union isfuzzy=true
+(DeviceNetworkEvents
+ | where Timestamp > ago(look)
+ | where RemoteIP == ip or LocalIP == ip
+ | summarize C = count(), Devices = make_set(DeviceName, 5),
+             Processes = make_set(InitiatingProcessFileName, 8),
+             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 5),
+             Ports = make_set(RemotePort, 10), Actions = make_set(ActionType, 6), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - endpoint network',
+           Detail = strcat(C, ' connection event(s) | devices: ', tostring(Devices),
+                           ' | processes: ', tostring(Processes), ' | users: ', tostring(Users),
+                           ' | remote ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last),
+(DeviceLogonEvents
+ | where Timestamp > ago(look)
+ | where RemoteIP == ip
+ | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),
+             Devices = make_set(DeviceName, 5), Accounts = make_set(strcat(AccountDomain, '/', AccountName), 8),
+             LogonTypes = make_set(LogonType, 6), Actions = make_set(ActionType, 6), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - device logons',
+           Detail = strcat(C, ' logon event(s), ', Failures, ' failed | devices: ', tostring(Devices),
+                           ' | accounts: ', tostring(Accounts), ' | types: ', tostring(LogonTypes),
+                           ' | actions: ', tostring(Actions)), Last),
+(CloudAppEvents
+ | where Timestamp > ago(look)
+ | where IPAddress == ip
+ | summarize C = count(), AdminOperations = countif(IsAdminOperation == true),
+             ProxyEvents = countif(IsAnonymousProxy == true), Accounts = make_set(coalesce(AccountId, AccountDisplayName), 8),
+             Applications = make_set(Application, 8), Activities = make_set(ActivityType, 8),
+             Actions = make_set(ActionType, 8), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - cloud apps',
+           Detail = strcat(C, ' activity event(s), ', AdminOperations, ' admin operation(s), ', ProxyEvents,
+                           ' anonymous-proxy event(s) | accounts: ', tostring(Accounts),
+                           ' | applications: ', tostring(Applications), ' | activities: ', tostring(Activities),
+                           ' | actions: ', tostring(Actions)), Last),
+(IdentityLogonEvents
+ | where Timestamp > ago(look)
+ | where IPAddress == ip or DestinationIPAddress == ip
+ | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),
+             Accounts = make_set(coalesce(AccountUpn, AccountName), 8), Devices = make_set(DeviceName, 6),
+             Destinations = make_set(DestinationDeviceName, 6), Applications = make_set(Application, 6),
+             Protocols = make_set(Protocol, 6), Actions = make_set(ActionType, 8), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - identity logons',
+           Detail = strcat(C, ' authentication event(s), ', Failures, ' failed | accounts: ', tostring(Accounts),
+                           ' | devices: ', tostring(Devices), ' | destinations: ', tostring(Destinations),
+                           ' | applications: ', tostring(Applications), ' | protocols: ', tostring(Protocols),
+                           ' | actions: ', tostring(Actions)), Last),
+(UrlClickEvents
+ | where Timestamp > ago(look)
+ | where IPAddress == ip
+ | summarize C = count(), ClickThrough = countif(IsClickedThrough == true), Users = make_set(AccountUpn, 8),
+             Workloads = make_set(Workload, 5), Actions = make_set(ActionType, 6),
+             Threats = make_set(ThreatTypes, 6), Urls = make_set(Url, 8), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - URL clicks',
+           Detail = strcat(C, ' click event(s), ', ClickThrough, ' clicked through | users: ', tostring(Users),
+                           ' | workloads: ', tostring(Workloads), ' | actions: ', tostring(Actions),
+                           ' | threats: ', tostring(Threats), ' | URLs: ', tostring(Urls)), Last),
+(EmailEvents
+ | where Timestamp > ago(look)
+ | where SenderIPv4 == ip or SenderIPv6 == ip
+ | summarize C = count(), Recipients = dcount(RecipientEmailAddress), Senders = make_set(SenderFromAddress, 8),
+             Subjects = make_set(Subject, 6), Directions = make_set(EmailDirection, 4),
+             Delivery = make_set(DeliveryAction, 5), Threats = make_set(ThreatTypes, 6), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - email',
+           Detail = strcat(C, ' message event(s) to ', Recipients, ' recipient(s) | senders: ', tostring(Senders),
+                           ' | subjects: ', tostring(Subjects), ' | directions: ', tostring(Directions),
+                           ' | delivery: ', tostring(Delivery), ' | threats: ', tostring(Threats)), Last),
+(AlertEvidence
+ | where Timestamp > ago(look)
+ | where RemoteIP == ip or LocalIP == ip
+ | summarize C = dcount(AlertId), Titles = make_set(Title, 8), Severities = make_set(Severity, 5),
+             Sources = make_set(ServiceSource, 6), Roles = make_set(EvidenceRole, 5), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - alert evidence',
+           Detail = strcat(C, ' alert(s) | titles: ', tostring(Titles), ' | severity: ', tostring(Severities),
+                           ' | services: ', tostring(Sources), ' | evidence roles: ', tostring(Roles)), Last)
+| where isnotempty(Source)
+| order by Last desc
+| take 60"""
+
 SIGNIN_KQL = f"""let ip = '{KQL_IP}';
 let look = {LOOK};
 let hist = 90d;
@@ -219,6 +306,8 @@ IP enrichment &mdash; <code>{IP}</code>
 
 @{{if(empty(concat(variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'))), '', concat('<div style="{H4}"><b>Reputation</b></div><table style="{TBL}">', variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'), '</table>'))}}
 
+@{{variables('DefenderHtml')}}
+
 <div style="{H4}"><b>Workspace insights &mdash; last @{{parameters('LookbackDays')}} days</b></div>
 <table style="{TBL}">
 <tr><th style="{TH}">Source</th><th style="{TH}">Detail</th><th style="{TH}">Last seen (UTC)</th></tr>
@@ -281,6 +370,25 @@ SHODAN_VALUE = (
     "if(equals(outputs('HTTP_Shodan_InternetDB')?['statusCode'], 404), "
     f"'<tr><th style=\"{TH}\">Shodan InternetDB</th><td style=\"{TD}\">no InternetDB record</td></tr>', "
     f"'<tr><th style=\"{TH}\">Shodan InternetDB</th><td style=\"{TD}\">lookup unavailable</td></tr>'))"
+)
+
+DEFENDER_HTML_VALUE = (
+    "@if(equals(outputs('HTTP_Defender_XDR_Hunting')?['statusCode'], 200), concat("
+    f"'<div style=\"{H4}\"><b>Defender XDR Advanced Hunting</b> ', "
+    "'<span style=\"font-weight:400;color:#605e5c\">(direct Microsoft Graph query; last ', "
+    "string(parameters('DefenderLookbackDays')), ' days)</span></div>', "
+    f"'<table style=\"{TBL}\"><tr><th style=\"{TH}\">Source</th><th style=\"{TH}\">Detail</th>', "
+    f"'<th style=\"{TH}\">Last seen (UTC)</th></tr>', "
+    "if(empty(outputs('Compose_Defender_Rows')), "
+    f"'<tr><td style=\"{TD}\" colspan=\"3\">No matching Defender XDR Advanced Hunting records.</td></tr>', "
+    "join(body('Select_Defender_Rows'), '')), '</table>'), "
+    "concat("
+    f"'<div style=\"{H4}\"><b>Defender XDR Advanced Hunting</b></div><table style=\"{TBL}\">', "
+    f"'<tr><td style=\"{TD}\">Query unavailable (HTTP ', "
+    "string(coalesce(outputs('HTTP_Defender_XDR_Hunting')?['statusCode'], 'no response')), "
+    "'). Confirm the managed identity has Microsoft Graph application permission <b>ThreatHunting.Read.All</b>, ', "
+    "'the relevant Defender products are licensed/onboarded, and the tenant has not reached its hunting quota.', "
+    "'</td></tr></table>'))"
 )
 
 # ---- sign-in context block (rendered only when a sign-in from this IP exists) --------
@@ -355,6 +463,8 @@ definition = {
         "VirusTotalApiKey": {"type": "SecureString", "defaultValue": ""},
         "GreyNoiseApiKey": {"type": "SecureString", "defaultValue": ""},
         "EnableShodanInternetDB": {"type": "Bool", "defaultValue": False},
+        "EnableDefenderAdvancedHunting": {"type": "Bool", "defaultValue": False},
+        "DefenderLookbackDays": {"type": "Int", "defaultValue": 14},
         "IPContextWatchlistAlias": {"type": "String", "defaultValue": "IPContext"},
         "WorkspaceSubscriptionId": {"type": "String"},
         "WorkspaceResourceGroup": {"type": "String"},
@@ -396,8 +506,12 @@ definition = {
             "runAfter": after("Init_GreyNoiseClassification"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "ShodanHtml", "type": "string", "value": ""}]},
         },
-        "Init_AbuseScore": {
+        "Init_DefenderHtml": {
             "runAfter": after("Init_ShodanHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "DefenderHtml", "type": "string", "value": ""}]},
+        },
+        "Init_AbuseScore": {
+            "runAfter": after("Init_DefenderHtml"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "AbuseScore", "type": "integer", "value": 0}]},
         },
         "Init_VTMalicious": {
@@ -457,8 +571,12 @@ definition = {
                     "runAfter": after("Reset_GreyNoiseClassification"), "type": "SetVariable",
                     "inputs": {"name": "ShodanHtml", "value": ""},
                 },
-                "Reset_AbuseScore": {
+                "Reset_DefenderHtml": {
                     "runAfter": after("Reset_ShodanHtml"), "type": "SetVariable",
+                    "inputs": {"name": "DefenderHtml", "value": ""},
+                },
+                "Reset_AbuseScore": {
+                    "runAfter": after("Reset_DefenderHtml"), "type": "SetVariable",
                     "inputs": {"name": "AbuseScore", "value": 0},
                 },
                 "Reset_VTMalicious": {
@@ -638,9 +756,53 @@ definition = {
                     },
                     "else": {"actions": {}},
                 },
+                # Defender XDR Advanced Hunting through Microsoft Graph (optional).
+                "Condition_Defender_XDR_enabled": {
+                    "runAfter": after("Condition_Shodan_licensed"), "type": "If",
+                    "expression": {"and": [{"equals": ["@parameters('EnableDefenderAdvancedHunting')", True]}]},
+                    "actions": {
+                        "HTTP_Defender_XDR_Hunting": {
+                            "runAfter": {}, "type": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "uri": "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
+                                "headers": {"Content-Type": "application/json; charset=utf-8"},
+                                "body": {
+                                    "Query": DEFENDER_KQL,
+                                    "Timespan": "@{concat('P', string(parameters('DefenderLookbackDays')), 'D')}",
+                                },
+                                "authentication": {
+                                    "type": "ManagedServiceIdentity",
+                                    "audience": "https://graph.microsoft.com",
+                                },
+                            },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs", "outputs"]}},
+                        },
+                        "Compose_Defender_Rows": {
+                            "runAfter": after("HTTP_Defender_XDR_Hunting", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "Compose",
+                            "inputs": ("@if(equals(outputs('HTTP_Defender_XDR_Hunting')?['statusCode'], 200), "
+                                       "coalesce(body('HTTP_Defender_XDR_Hunting')?['results'], json('[]')), json('[]'))"),
+                        },
+                        "Select_Defender_Rows": {
+                            "runAfter": after("Compose_Defender_Rows"), "type": "Select",
+                            "inputs": {
+                                "from": "@outputs('Compose_Defender_Rows')",
+                                "select": (f'<tr><td style="{TD}"><b>@{{item()?[\'Source\']}}</b></td>'
+                                           f'<td style="{TD}">@{{item()?[\'Detail\']}}</td>'
+                                           f'<td style="{TD}">@{{item()?[\'Last\']}}</td></tr>'),
+                            },
+                        },
+                        "Set_DefenderHtml": {
+                            "runAfter": after("Select_Defender_Rows"), "type": "SetVariable",
+                            "inputs": {"name": "DefenderHtml", "value": DEFENDER_HTML_VALUE},
+                        },
+                    },
+                    "else": {"actions": {}},
+                },
                 # most recent Entra sign-in from this IP (device / OS / browser / risk)
                 "Run_KQL_signin_context": {
-                    "runAfter": after("Condition_Shodan_licensed"), "type": "ApiConnection",
+                    "runAfter": after("Condition_Defender_XDR_enabled"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": LA_CONN}},
                         "method": "post",
@@ -790,11 +952,12 @@ template = {
     "contentVersion": "1.0.0.0",
     "metadata": {
         "title": "Enrich IP entities and post a Sentinel incident comment",
-        "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts, then posts one formatted incident comment.",
-        "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, and appropriately licensed VirusTotal or Shodan access.",
+        "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts. An optional Microsoft Graph module queries Defender XDR Advanced Hunting data that is not ingested into the Sentinel workspace. Results are posted as one formatted incident comment.",
+        "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, appropriately licensed VirusTotal or Shodan access, and Defender XDR licensing plus Microsoft Graph ThreatHunting.Read.All application permission for direct Advanced Hunting.",
         "postDeployment": [
             "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
             "Grant the same identity 'Log Analytics Reader' on the workspace.",
+            "If Defender Advanced Hunting is enabled, grant the managed identity Microsoft Graph application permission 'ThreatHunting.Read.All' using an app-role assignment and allow time for token propagation.",
             "Authorise both API connections (they are pre-set to managed identity).",
             "Attach the playbook to an automation rule, or run it on demand from an incident."
         ],
@@ -824,6 +987,10 @@ template = {
                             "metadata": {"description": "Optional GreyNoise Community API key. Leave blank to disable and avoid unauthenticated rate limits."}},
         "EnableShodanInternetDB": {"type": "bool", "defaultValue": False,
                                    "metadata": {"description": "Enable only when the client has Shodan Enterprise permission for commercial InternetDB use. Disabled by default."}},
+        "EnableDefenderAdvancedHunting": {"type": "bool", "defaultValue": False,
+                                          "metadata": {"description": "Query Defender XDR Advanced Hunting directly through Microsoft Graph. Requires the managed identity to have the ThreatHunting.Read.All application permission and relevant Defender licensing."}},
+        "DefenderLookbackDays": {"type": "int", "defaultValue": 14, "minValue": 1, "maxValue": 30,
+                                 "metadata": {"description": "Defender XDR Advanced Hunting lookback. Raw Defender hunting data is limited to a maximum of 30 days."}},
         "IPContextWatchlistAlias": {"type": "string", "defaultValue": "IPContext",
                                     "metadata": {"description": "Optional Sentinel watchlist alias. Use SearchKey for the IP and recommended columns Classification, Owner, Description, RiskOverride and ValidUntil. Set blank to disable."}},
     },
@@ -891,6 +1058,8 @@ template = {
                     "VirusTotalApiKey": {"value": "[parameters('VirusTotalApiKey')]"},
                     "GreyNoiseApiKey": {"value": "[parameters('GreyNoiseApiKey')]"},
                     "EnableShodanInternetDB": {"value": "[parameters('EnableShodanInternetDB')]"},
+                    "EnableDefenderAdvancedHunting": {"value": "[parameters('EnableDefenderAdvancedHunting')]"},
+                    "DefenderLookbackDays": {"value": "[parameters('DefenderLookbackDays')]"},
                     "IPContextWatchlistAlias": {"value": "[parameters('IPContextWatchlistAlias')]"},
                     "WorkspaceSubscriptionId": {"value": "[parameters('WorkspaceSubscriptionId')]"},
                     "WorkspaceResourceGroup": {"value": "[parameters('WorkspaceResourceGroup')]"},
