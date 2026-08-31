@@ -1,0 +1,146 @@
+// =====================================================================================
+// IP Insights - workspace-native enrichment for a single IP entity
+// Used by the Enrich-IP-IncidentComment playbook (embedded in azuredeploy.json).
+// Kept here so you can tune it in the Logs blade and paste it back.
+//
+// Contract: returns columns  Source (string) | Detail (string) | Last (datetime)
+// The playbook renders these rows straight into the incident comment table.
+//
+// isfuzzy=true on every union means a table that does not exist in your workspace
+// is silently skipped instead of failing the whole query. Add or remove legs freely.
+// =====================================================================================
+let ip = '103.187.6.124';          // playbook substitutes the entity address
+let look = 14d;                    // playbook substitutes LookbackDays
+//
+// ---------- Threat intelligence -------------------------------------------------
+let TI = union isfuzzy=true
+(
+    ThreatIntelligenceIndicator
+    | where TimeGenerated > ago(30d)
+    | where NetworkIP == ip or NetworkSourceIP == ip or NetworkDestinationIP == ip
+    | where Active == true
+    | summarize arg_max(TimeGenerated, *) by IndicatorId
+    | project Source = 'Threat Intel',
+              Detail = strcat('TI match - ', coalesce(Description, 'indicator'),
+                              ' | type: ', coalesce(ThreatType, 'n/a'),
+                              ' | confidence: ', tostring(ConfidenceScore),
+                              ' | feed: ', coalesce(SourceSystem, 'n/a')),
+              Last = TimeGenerated
+),
+(
+    ThreatIntelIndicators
+    | where TimeGenerated > ago(30d)
+    | where ObservableValue == ip
+    | summarize arg_max(TimeGenerated, *) by Id
+    | project Source = 'Threat Intel',
+              Detail = strcat('TI match - ', tostring(Data.description),
+                              ' | confidence: ', tostring(Confidence)),
+              Last = TimeGenerated
+);
+//
+// ---------- Where this IP has been seen in the workspace -------------------------
+let Sightings = union isfuzzy=true
+(
+    SigninLogs
+    | where TimeGenerated > ago(look) | where IPAddress == ip
+    | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'),
+                Users = make_set(UserPrincipalName, 8), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'SigninLogs',
+              Detail = strcat(C, ' sign-ins, ', U, ' user(s), ', F, ' failed | ', tostring(Users)),
+              Last
+),
+(
+    AADNonInteractiveUserSignInLogs
+    | where TimeGenerated > ago(look) | where IPAddress == ip
+    | summarize C = count(), U = dcount(UserPrincipalName), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s)'), Last
+),
+(
+    AzureActivity
+    | where TimeGenerated > ago(look) | where CallerIpAddress == ip
+    | summarize C = count(), Callers = make_set(Caller, 5), Ops = make_set(OperationNameValue, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'AzureActivity', Detail = strcat(C, ' operations | callers: ', tostring(Callers)), Last
+),
+(
+    OfficeActivity
+    | where TimeGenerated > ago(look) | where ClientIP has ip
+    | summarize C = count(), U = make_set(UserId, 5), Ops = make_set(Operation, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'OfficeActivity', Detail = strcat(C, ' events | users: ', tostring(U)), Last
+),
+(
+    SecurityEvent
+    | where TimeGenerated > ago(look) | where IpAddress == ip
+    | summarize C = count(), Hosts = make_set(Computer, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'SecurityEvent', Detail = strcat(C, ' events | hosts: ', tostring(Hosts)), Last
+),
+(
+    CommonSecurityLog
+    | where TimeGenerated > ago(look) | where SourceIP == ip or DestinationIP == ip
+    | summarize C = count(), Dev = dcount(DeviceName), Act = make_set(DeviceAction, 5),
+                Ports = make_set(DestinationPort, 8), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'CommonSecurityLog',
+              Detail = strcat(C, ' events across ', Dev, ' device(s) | actions: ', tostring(Act),
+                              ' | dst ports: ', tostring(Ports)),
+              Last
+),
+(
+    DeviceNetworkEvents
+    | where TimeGenerated > ago(look) | where RemoteIP == ip
+    | summarize C = count(), Dev = make_set(DeviceName, 5), Proc = make_set(InitiatingProcessFileName, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'DeviceNetworkEvents',
+              Detail = strcat(C, ' connections | devices: ', tostring(Dev), ' | processes: ', tostring(Proc)), Last
+),
+(
+    VMConnection
+    | where TimeGenerated > ago(look) | where RemoteIp == ip
+    | summarize C = count(), Dev = make_set(Computer, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'VMConnection', Detail = strcat(C, ' connections | hosts: ', tostring(Dev)), Last
+),
+(
+    W3CIISLog
+    | where TimeGenerated > ago(look) | where cIP == ip
+    | summarize C = count(), Sites = make_set(sSiteName, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'W3CIISLog', Detail = strcat(C, ' requests | sites: ', tostring(Sites)), Last
+),
+(
+    AWSCloudTrail
+    | where TimeGenerated > ago(look) | where SourceIpAddress == ip
+    | summarize C = count(), Users = make_set(UserIdentityArn, 5), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'AWSCloudTrail', Detail = strcat(C, ' API calls | identities: ', tostring(Users)), Last
+);
+//
+// ---------- Prior alerts / incidents referencing this IP -------------------------
+let Alerts = union isfuzzy=true
+(
+    SecurityAlert
+    | where TimeGenerated > ago(30d) | where Entities has ip
+    | summarize C = count(), Names = make_set(AlertName, 5), Sev = make_set(AlertSeverity, 4), Last = max(TimeGenerated)
+    | where C > 0
+    | project Source = 'Prior alerts',
+              Detail = strcat(C, ' alert(s) in 30d | ', tostring(Names), ' | severity: ', tostring(Sev)), Last
+);
+//
+union isfuzzy=true TI, Sightings, Alerts
+| where isnotempty(Source)
+| order by Last desc
+| take 60
+
+
+// ---------------------------------------------------------------------------------
+// OPTIONAL: watchlist match (STAT's "Watchlist Insights").
+// _GetWatchlist() throws if the watchlist does not exist, so add this leg only for
+// watchlists you actually have, and add `WL` to the final union above.
+// ---------------------------------------------------------------------------------
+// let WL = _GetWatchlist('HighValueAssets')
+//     | where SearchKey == ip
+//     | project Source = 'Watchlist', Detail = strcat('Present in watchlist HighValueAssets'), Last = now();
