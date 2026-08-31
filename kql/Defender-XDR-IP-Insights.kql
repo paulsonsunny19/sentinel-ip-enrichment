@@ -1,0 +1,92 @@
+// =====================================================================================
+// Defender XDR Advanced Hunting - IP enrichment
+// Run this in Microsoft Defender > Advanced Hunting to test the direct-Graph query.
+// The Logic App substitutes the incident IP and DefenderLookbackDays values.
+// Contract: Source (string) | Detail (string) | Last (datetime)
+// =====================================================================================
+let ip = '8.8.8.8';
+let look = 14d;
+union isfuzzy=true
+(DeviceNetworkEvents
+ | where Timestamp > ago(look)
+ | where RemoteIP == ip or LocalIP == ip
+ | summarize C = count(), Devices = make_set(DeviceName, 5),
+             Processes = make_set(InitiatingProcessFileName, 8),
+             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 5),
+             Ports = make_set(RemotePort, 10), Actions = make_set(ActionType, 6), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - endpoint network',
+           Detail = strcat(C, ' connection event(s) | devices: ', tostring(Devices),
+                           ' | processes: ', tostring(Processes), ' | users: ', tostring(Users),
+                           ' | remote ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last),
+(DeviceLogonEvents
+ | where Timestamp > ago(look)
+ | where RemoteIP == ip
+ | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),
+             Devices = make_set(DeviceName, 5), Accounts = make_set(strcat(AccountDomain, '/', AccountName), 8),
+             LogonTypes = make_set(LogonType, 6), Actions = make_set(ActionType, 6), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - device logons',
+           Detail = strcat(C, ' logon event(s), ', Failures, ' failed | devices: ', tostring(Devices),
+                           ' | accounts: ', tostring(Accounts), ' | types: ', tostring(LogonTypes),
+                           ' | actions: ', tostring(Actions)), Last),
+(CloudAppEvents
+ | where Timestamp > ago(look)
+ | where IPAddress == ip
+ | summarize C = count(), AdminOperations = countif(IsAdminOperation == true),
+             ProxyEvents = countif(IsAnonymousProxy == true), Accounts = make_set(coalesce(AccountId, AccountDisplayName), 8),
+             Applications = make_set(Application, 8), Activities = make_set(ActivityType, 8),
+             Actions = make_set(ActionType, 8), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - cloud apps',
+           Detail = strcat(C, ' activity event(s), ', AdminOperations, ' admin operation(s), ', ProxyEvents,
+                           ' anonymous-proxy event(s) | accounts: ', tostring(Accounts),
+                           ' | applications: ', tostring(Applications), ' | activities: ', tostring(Activities),
+                           ' | actions: ', tostring(Actions)), Last),
+(IdentityLogonEvents
+ | where Timestamp > ago(look)
+ | where IPAddress == ip or DestinationIPAddress == ip
+ | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),
+             Accounts = make_set(coalesce(AccountUpn, AccountName), 8), Devices = make_set(DeviceName, 6),
+             Destinations = make_set(DestinationDeviceName, 6), Applications = make_set(Application, 6),
+             Protocols = make_set(Protocol, 6), Actions = make_set(ActionType, 8), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - identity logons',
+           Detail = strcat(C, ' authentication event(s), ', Failures, ' failed | accounts: ', tostring(Accounts),
+                           ' | devices: ', tostring(Devices), ' | destinations: ', tostring(Destinations),
+                           ' | applications: ', tostring(Applications), ' | protocols: ', tostring(Protocols),
+                           ' | actions: ', tostring(Actions)), Last),
+(UrlClickEvents
+ | where Timestamp > ago(look)
+ | where IPAddress == ip
+ | summarize C = count(), ClickThrough = countif(IsClickedThrough == true), Users = make_set(AccountUpn, 8),
+             Workloads = make_set(Workload, 5), Actions = make_set(ActionType, 6),
+             Threats = make_set(ThreatTypes, 6), Urls = make_set(Url, 8), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - URL clicks',
+           Detail = strcat(C, ' click event(s), ', ClickThrough, ' clicked through | users: ', tostring(Users),
+                           ' | workloads: ', tostring(Workloads), ' | actions: ', tostring(Actions),
+                           ' | threats: ', tostring(Threats), ' | URLs: ', tostring(Urls)), Last),
+(EmailEvents
+ | where Timestamp > ago(look)
+ | where SenderIPv4 == ip or SenderIPv6 == ip
+ | summarize C = count(), Recipients = dcount(RecipientEmailAddress), Senders = make_set(SenderFromAddress, 8),
+             Subjects = make_set(Subject, 6), Directions = make_set(EmailDirection, 4),
+             Delivery = make_set(DeliveryAction, 5), Threats = make_set(ThreatTypes, 6), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - email',
+           Detail = strcat(C, ' message event(s) to ', Recipients, ' recipient(s) | senders: ', tostring(Senders),
+                           ' | subjects: ', tostring(Subjects), ' | directions: ', tostring(Directions),
+                           ' | delivery: ', tostring(Delivery), ' | threats: ', tostring(Threats)), Last),
+(AlertEvidence
+ | where Timestamp > ago(look)
+ | where RemoteIP == ip or LocalIP == ip
+ | summarize C = dcount(AlertId), Titles = make_set(Title, 8), Severities = make_set(Severity, 5),
+             Sources = make_set(ServiceSource, 6), Roles = make_set(EvidenceRole, 5), Last = max(Timestamp)
+ | where C > 0
+ | project Source = 'Defender XDR - alert evidence',
+           Detail = strcat(C, ' alert(s) | titles: ', tostring(Titles), ' | severity: ', tostring(Severities),
+                           ' | services: ', tostring(Sources), ' | evidence roles: ', tostring(Roles)), Last)
+| where isnotempty(Source)
+| order by Last desc
+| take 60
