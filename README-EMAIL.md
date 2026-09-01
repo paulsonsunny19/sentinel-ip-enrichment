@@ -13,11 +13,20 @@ same incident automation rule.
 
 | Source | Email enrichment placed in the incident comment |
 |---|---|
-| **Defender XDR Advanced Hunting — email record** | Full `EmailEvents` row: delivery action/location, direction, threat types/names, detection method, confidence level, bulk complaint level, email cluster ID, sender address/display name/IP, recipient, authentication details (SPF/DKIM/DMARC/composite auth), org- and user-level actions |
+| **Defender XDR Advanced Hunting — email record** | Full `EmailEvents` row: delivery action/location, direction, threat types/names, detection method, confidence level, bulk complaint level, email cluster ID, sender address/display name/IP, **all recipients** (a message can have more than one `EmailEvents` row), **parsed SPF/DKIM/DMARC/composite-auth verdicts**, **first-contact flag**, org- and user-level actions |
 | **Defender XDR Advanced Hunting — related activity** | Every attachment (name, type, SHA256), every URL contained in the message, Safe Links click-through on those URLs (who clicked, whether they got through, threat type), post-delivery remediation events (ZAP, admin/user actions), and alert evidence |
 | **Microsoft Defender Threat Intelligence (MDTI)** | Reputation/classification and score, first/last seen, registrar for the **sender's domain** |
-| **Sentinel workspace** | Current `ThreatIntelIndicators`, legacy TI fallback matching the sender address/domain, prior alerts, ingested `EmailEvents`/`EmailUrlInfo` sightings, and optional client watchlist context |
+| **Sentinel workspace** | Current `ThreatIntelIndicators`, legacy TI fallback matching the sender address/domain, prior alerts, ingested `EmailEvents`/`EmailUrlInfo`/`EmailAttachmentInfo`/`UrlClickEvents` sightings (works even when the Graph Advanced Hunting call above is disabled or unpermissioned, as long as the M365 Defender data connector streams these tables into the workspace), and optional client watchlist context |
 | **Triage** | A HIGH / MEDIUM / LOW / UNKNOWN verdict and a concise source-status summary |
+
+**How Mail message entities are read.** The Microsoft Sentinel connector has no documented,
+stable "Get Mail Messages" entity action, so this playbook parses the incident trigger's raw
+`relatedEntities` array directly (`ParseJson` + a `kind == 'MailMessage'` filter) instead of
+guessing at an entity-fetch action's response schema. The properties read off each entity —
+`networkMessageId`, `internetMessageId`, `p1Sender`, `senderIP`, `recipient`, `receiveDate`,
+`subject` — are lower-camelCase under `properties`, confirmed against a real Sentinel incident
+payload rather than assumed. A same-cased top-level fallback is kept for resilience in case a
+future connector update changes the shape.
 
 The playbook matches Defender's email tables primarily on `NetworkMessageId` (falling back to
 `InternetMessageId` when the Sentinel entity doesn't carry one — this can happen depending on how

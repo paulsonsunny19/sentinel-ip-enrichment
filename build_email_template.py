@@ -45,6 +45,7 @@ let EmailRow = union isfuzzy=true
  | extend SafeMsgId=tostring(column_ifexists('NetworkMessageId', '')),
           SafeIntMsgId=tostring(column_ifexists('InternetMessageId', ''))
  | where MatchesMessage(SafeMsgId, SafeIntMsgId)
+ | extend AuthJson=parse_json(tostring(column_ifexists('AuthenticationDetails', '{{}}')))
  | summarize arg_max(Timestamp, *) by SafeMsgId
  | project Subject=tostring(column_ifexists('Subject', '')),
            SenderFromAddress=tostring(column_ifexists('SenderFromAddress', '')),
@@ -63,7 +64,9 @@ let EmailRow = union isfuzzy=true
            EmailClusterId=tostring(column_ifexists('EmailClusterId', '')),
            AttachmentCount=tolong(column_ifexists('AttachmentCount', 0)),
            UrlCount=tolong(column_ifexists('UrlCount', 0)),
-           AuthenticationDetails=tostring(column_ifexists('AuthenticationDetails', '')),
+           SPF=tostring(AuthJson.SPF), DKIM=tostring(AuthJson.DKIM),
+           DMARC=tostring(AuthJson.DMARC), CompAuth=tostring(AuthJson.CompAuth),
+           IsFirstContact=tostring(column_ifexists('IsFirstContact', '')),
            OrgLevelAction=tostring(column_ifexists('OrgLevelAction', '')),
            UserLevelAction=tostring(column_ifexists('UserLevelAction', '')),
            Timestamp),
@@ -71,15 +74,23 @@ let EmailRow = union isfuzzy=true
            SenderIPv6:string, RecipientEmailAddress:string, EmailDirection:string, DeliveryAction:string,
            DeliveryLocation:string, ThreatTypes:string, ThreatNames:string, DetectionMethods:string,
            ConfidenceLevel:string, BulkComplaintLevel:long, EmailClusterId:string, AttachmentCount:long,
-           UrlCount:long, AuthenticationDetails:string, OrgLevelAction:string, UserLevelAction:string,
-           Timestamp:datetime)[]);
+           UrlCount:long, SPF:string, DKIM:string, DMARC:string, CompAuth:string, IsFirstContact:string,
+           OrgLevelAction:string, UserLevelAction:string, Timestamp:datetime)[]);
+let RecipientSummary = union isfuzzy=true
+(EmailEvents
+ | where Timestamp > ago(look)
+ | extend SafeMsgId=tostring(column_ifexists('NetworkMessageId', '')),
+          SafeIntMsgId=tostring(column_ifexists('InternetMessageId', ''))
+ | where MatchesMessage(SafeMsgId, SafeIntMsgId)
+ | summarize Recipients=make_set(tostring(column_ifexists('RecipientEmailAddress', '')), 50)),
+(datatable(Recipients:dynamic)[]);
 let AttachmentSummary = union isfuzzy=true
 (EmailAttachmentInfo
  | where Timestamp > ago(look)
  | extend SafeMsgId=tostring(column_ifexists('NetworkMessageId', ''))
  | where isnotempty(msgId) and SafeMsgId == msgId
  | summarize AttachmentRows=count(), FileNames=make_set(tostring(column_ifexists('FileName', '')), 15),
-             FileTypes=make_set(tostring(column_ifexists('FileType', '')), 10),
+             FileTypes=make_set(tostring(coalesce(column_ifexists('FileType', ''), column_ifexists('FileExtension', ''))), 10),
              Sha256s=make_set(tostring(column_ifexists('SHA256', '')), 15)),
 (datatable(AttachmentRows:long, FileNames:dynamic, FileTypes:dynamic, Sha256s:dynamic)[]);
 let UrlSummary = union isfuzzy=true
@@ -135,9 +146,14 @@ datatable(Seed:int)[1]
          ConfidenceLevel=tostring(coalesce(toscalar(EmailRow | project ConfidenceLevel), '')),
          BulkComplaintLevel=tolong(coalesce(toscalar(EmailRow | project BulkComplaintLevel), -1)),
          EmailClusterId=tostring(coalesce(toscalar(EmailRow | project EmailClusterId), '')),
-         AuthenticationDetails=tostring(coalesce(toscalar(EmailRow | project AuthenticationDetails), '')),
+         SPF=tostring(coalesce(toscalar(EmailRow | project SPF), '')),
+         DKIM=tostring(coalesce(toscalar(EmailRow | project DKIM), '')),
+         DMARC=tostring(coalesce(toscalar(EmailRow | project DMARC), '')),
+         CompAuth=tostring(coalesce(toscalar(EmailRow | project CompAuth), '')),
+         IsFirstContact=tostring(coalesce(toscalar(EmailRow | project IsFirstContact), '')),
          OrgLevelAction=tostring(coalesce(toscalar(EmailRow | project OrgLevelAction), '')),
          UserLevelAction=tostring(coalesce(toscalar(EmailRow | project UserLevelAction), '')),
+         Recipients=tostring(coalesce(toscalar(RecipientSummary | project Recipients), dynamic([]))),
          AttachmentRows=tolong(coalesce(toscalar(AttachmentSummary | project AttachmentRows), 0)),
          FileNames=tostring(coalesce(toscalar(AttachmentSummary | project FileNames), dynamic([]))),
          FileTypes=tostring(coalesce(toscalar(AttachmentSummary | project FileTypes), dynamic([]))),
@@ -237,6 +253,18 @@ let Observations = union isfuzzy=true
  | where isnotempty(msgId) and SafeMsgId == msgId
  | summarize Count=count(), Urls=make_set(tostring(column_ifexists('Url', '')), 15), Last=max(TimeGenerated)
  | project Source='Ingested email URLs', Detail=strcat(Count, ' URL(s) | ', tostring(Urls)), Last),
+(EmailAttachmentInfo
+ | where TimeGenerated > ago(look)
+ | extend SafeMsgId=tostring(column_ifexists('NetworkMessageId', ''))
+ | where isnotempty(msgId) and SafeMsgId == msgId
+ | summarize Count=count(), FileNames=make_set(tostring(column_ifexists('FileName', '')), 15), Last=max(TimeGenerated)
+ | project Source='Ingested email attachments', Detail=strcat(Count, ' attachment(s) | ', tostring(FileNames)), Last),
+(UrlClickEvents
+ | where TimeGenerated > ago(look)
+ | extend SafeMsgId=tostring(column_ifexists('NetworkMessageId', ''))
+ | where isnotempty(msgId) and SafeMsgId == msgId
+ | summarize Count=count(), Users=make_set(tostring(column_ifexists('AccountUpn', '')), 20), Last=max(TimeGenerated)
+ | project Source='Ingested Safe Links clicks', Detail=strcat(Count, ' click(s) | users: ', tostring(Users)), Last),
 (datatable(Source:string, Detail:string, Last:datetime)[]);
 union TI, ClientContext, Alerts, Observations
 | where isnotempty(Source)
@@ -276,8 +304,9 @@ DEFENDER_BLOCK = f"""<div style="{H4}"><b>Defender XDR email record &mdash; last
 <tr><th style="{TH}">Delivery</th><td style="{TD}"><b>@{{string(coalesce(variables('DefenderJson')?['DeliveryAction'], 'n/a'))}}</b> &nbsp;|&nbsp; location: <b>@{{string(coalesce(variables('DefenderJson')?['DeliveryLocation'], 'n/a'))}}</b></td><th style="{TH}">Direction</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['EmailDirection'], 'n/a'))}}</td></tr>
 <tr><th style="{TH}">Threat</th><td style="{TD}" colspan="3">types: <b>@{{string(coalesce(variables('DefenderJson')?['ThreatTypes'], '[]'))}}</b> &nbsp;|&nbsp; names: @{{string(coalesce(variables('DefenderJson')?['ThreatNames'], '[]'))}} &nbsp;|&nbsp; detection: @{{string(coalesce(variables('DefenderJson')?['DetectionMethods'], 'n/a'))}} &nbsp;|&nbsp; confidence: @{{string(coalesce(variables('DefenderJson')?['ConfidenceLevel'], 'n/a'))}} &nbsp;|&nbsp; bulk complaint level: @{{string(coalesce(variables('DefenderJson')?['BulkComplaintLevel'], 'n/a'))}}</td></tr>
 <tr><th style="{TH}">Sender</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('DefenderJson')?['SenderFromAddress'], 'n/a'))}} (@{{string(coalesce(variables('DefenderJson')?['SenderDisplayName'], 'n/a'))}}) &nbsp;|&nbsp; IP: @{{string(coalesce(variables('DefenderJson')?['SenderIPv4'], 'n/a'))}} @{{string(coalesce(variables('DefenderJson')?['SenderIPv6'], ''))}}</td></tr>
-<tr><th style="{TH}">Recipient</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['RecipientEmailAddress'], 'n/a'))}}</td><th style="{TH}">Cluster</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['EmailClusterId'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Authentication</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('DefenderJson')?['AuthenticationDetails'], 'n/a'))}}</td></tr>
+<tr><th style="{TH}">Recipients</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('DefenderJson')?['Recipients'], '[]'))}}</td></tr>
+<tr><th style="{TH}">First contact?</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['IsFirstContact'], 'n/a'))}}</td><th style="{TH}">Cluster</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['EmailClusterId'], 'n/a'))}}</td></tr>
+<tr><th style="{TH}">Authentication</th><td style="{TD}" colspan="3">SPF: <b>@{{string(coalesce(variables('DefenderJson')?['SPF'], 'n/a'))}}</b> &nbsp;|&nbsp; DKIM: <b>@{{string(coalesce(variables('DefenderJson')?['DKIM'], 'n/a'))}}</b> &nbsp;|&nbsp; DMARC: <b>@{{string(coalesce(variables('DefenderJson')?['DMARC'], 'n/a'))}}</b> &nbsp;|&nbsp; composite auth: <b>@{{string(coalesce(variables('DefenderJson')?['CompAuth'], 'n/a'))}}</b></td></tr>
 <tr><th style="{TH}">Org/user action</th><td style="{TD}" colspan="3">org: @{{string(coalesce(variables('DefenderJson')?['OrgLevelAction'], 'n/a'))}} &nbsp;|&nbsp; user: @{{string(coalesce(variables('DefenderJson')?['UserLevelAction'], 'n/a'))}}</td></tr>
 <tr><th style="{TH}">Attachments</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['AttachmentRows'], 0))}} attachment(s) &nbsp;|&nbsp; @{{string(coalesce(variables('DefenderJson')?['FileNames'], '[]'))}}</td><th style="{TH}">Attachment hashes</th><td style="{TD}">@{{string(coalesce(variables('DefenderJson')?['Sha256s'], '[]'))}}</td></tr>
 <tr><th style="{TH}">URLs in message</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('DefenderJson')?['UrlRows'], 0))}} URL(s): @{{string(coalesce(variables('DefenderJson')?['Urls'], '[]'))}}</td></tr>
@@ -338,8 +367,9 @@ Reported email enrichment &mdash; <code>@{{outputs('Compose_Display_Subject')}}<
 <div style="font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px">@{{outputs('Compose_VerdictReason')}}</div>
 <table style="{TBL}">
 <tr><th style="{TH}">Subject</th><td style="{TD}">@{{outputs('Compose_Display_Subject')}}</td></tr>
-<tr><th style="{TH}">Sender</th><td style="{TD}"><b>@{{outputs('Compose_Sender')}}</b> (domain: @{{outputs('Compose_Sender_Domain')}})</td></tr>
-<tr><th style="{TH}">Recipient</th><td style="{TD}">@{{outputs('Compose_Recipient')}}</td></tr>
+<tr><th style="{TH}">Sender</th><td style="{TD}"><b>@{{outputs('Compose_Sender')}}</b> (domain: @{{outputs('Compose_Sender_Domain')}}) &nbsp;|&nbsp; IP: @{{outputs('Compose_Sender_IP')}}</td></tr>
+<tr><th style="{TH}">Recipient (from entity)</th><td style="{TD}">@{{outputs('Compose_Recipient')}}</td></tr>
+<tr><th style="{TH}">Received</th><td style="{TD}">@{{outputs('Compose_Receive_Date')}}</td></tr>
 <tr><th style="{TH}">Message ID</th><td style="{TD}">@{{outputs('Compose_Clean_MessageId')}}</td></tr>
 </table>
 @{{variables('MDTIHtml')}}
@@ -430,21 +460,53 @@ definition = {
             "runAfter": after("Init_DefenderStatus"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "DefenderHtml", "type": "string", "value": ""}]},
         },
-        "Entities_-_Get_Mail_Messages": {
-            "runAfter": after("Init_DefenderHtml"), "type": "ApiConnection",
+        # Sentinel's Microsoft Sentinel connector doesn't have a documented "Get Mail
+        # Messages" entity action with a stable schema, so — unlike the URL/IP/Device/
+        # FileHash entity fetches — Mail message entities are pulled by parsing the raw
+        # relatedEntities array on the incident trigger and filtering by kind == 'MailMessage'.
+        # This is the same approach a working manual playbook in this tenant uses, and its
+        # property names (networkMessageId, internetMessageId, p1Sender, senderIP, recipient,
+        # receiveDate, subject) are what's used below.
+        "Parse_Related_Entities": {
+            "runAfter": after("Init_DefenderHtml"), "type": "ParseJson",
             "inputs": {
-                "host": {"connection": {"name": SENTINEL_CONN}},
-                "method": "post",
-                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
-                "path": "/entities/mailmessage",
+                "content": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "name": {"type": "string"},
+                            "type": {"type": "string"},
+                            "kind": {"type": "string"},
+                            "properties": {
+                                "type": "object",
+                                "properties": {
+                                    "networkMessageId": {"type": "string"},
+                                    "internetMessageId": {"type": "string"},
+                                    "p1Sender": {"type": "string"},
+                                    "senderIP": {"type": "string"},
+                                    "recipient": {"type": "string"},
+                                    "receiveDate": {"type": "string"},
+                                    "subject": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "Filter_Mail_Entities": {
+            "runAfter": after("Parse_Related_Entities"), "type": "Query",
+            "inputs": {
+                "from": "@body('Parse_Related_Entities')",
+                "where": "@equals(item()?['kind'], 'MailMessage')",
             },
         },
         "For_each_Mail_entity": {
-            "foreach": (
-                "@coalesce(body('Entities_-_Get_Mail_Messages')?['MailMessages'], "
-                "body('Entities_-_Get_Mail_Messages')?['Mailmessages'], json('[]'))"
-            ),
-            "runAfter": after("Entities_-_Get_Mail_Messages"),
+            "foreach": "@body('Filter_Mail_Entities')",
+            "runAfter": after("Filter_Mail_Entities"),
             "type": "Foreach",
             "runtimeConfiguration": {"concurrency": {"repetitions": 1}},
             "actions": {
@@ -475,36 +537,50 @@ definition = {
                 "Compose_Clean_MessageId": {
                     "runAfter": after("Reset_DefenderHtml"), "type": "Compose",
                     "inputs": (
-                        "@trim(string(coalesce(items('For_each_Mail_entity')?['NetworkMessageId'], "
-                        "items('For_each_Mail_entity')?['networkMessageId'], '')))"
+                        "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['networkMessageId'], "
+                        "items('For_each_Mail_entity')?['NetworkMessageId'], '')))"
                     ),
                 },
                 "Compose_Clean_InternetMessageId": {
                     "runAfter": after("Compose_Clean_MessageId"), "type": "Compose",
                     "inputs": (
-                        "@trim(string(coalesce(items('For_each_Mail_entity')?['InternetMessageId'], "
-                        "items('For_each_Mail_entity')?['internetMessageId'], '')))"
+                        "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['internetMessageId'], "
+                        "items('For_each_Mail_entity')?['InternetMessageId'], '')))"
                     ),
                 },
                 "Compose_Sender": {
                     "runAfter": after("Compose_Clean_InternetMessageId"), "type": "Compose",
                     "inputs": (
-                        "@toLower(trim(string(coalesce(items('For_each_Mail_entity')?['Sender'], "
-                        "items('For_each_Mail_entity')?['P1Sender'], items('For_each_Mail_entity')?['sender'], ''))))"
+                        "@toLower(trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['p1Sender'], "
+                        "items('For_each_Mail_entity')?['Sender'], items('For_each_Mail_entity')?['sender'], ''))))"
+                    ),
+                },
+                "Compose_Sender_IP": {
+                    "runAfter": after("Compose_Sender"), "type": "Compose",
+                    "inputs": (
+                        "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['senderIP'], "
+                        "items('For_each_Mail_entity')?['SenderIP'], '')))"
                     ),
                 },
                 "Compose_Recipient": {
-                    "runAfter": after("Compose_Sender"), "type": "Compose",
+                    "runAfter": after("Compose_Sender_IP"), "type": "Compose",
                     "inputs": (
-                        "@trim(string(coalesce(items('For_each_Mail_entity')?['Recipient'], "
-                        "items('For_each_Mail_entity')?['recipient'], '')))"
+                        "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['recipient'], "
+                        "items('For_each_Mail_entity')?['Recipient'], '')))"
+                    ),
+                },
+                "Compose_Receive_Date": {
+                    "runAfter": after("Compose_Recipient"), "type": "Compose",
+                    "inputs": (
+                        "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['receiveDate'], "
+                        "items('For_each_Mail_entity')?['ReceiveDate'], '')))"
                     ),
                 },
                 "Compose_Subject": {
-                    "runAfter": after("Compose_Recipient"), "type": "Compose",
+                    "runAfter": after("Compose_Receive_Date"), "type": "Compose",
                     "inputs": (
-                        "@trim(string(coalesce(items('For_each_Mail_entity')?['Subject'], "
-                        "items('For_each_Mail_entity')?['subject'], '(no subject)')))"
+                        "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['subject'], "
+                        "items('For_each_Mail_entity')?['Subject'], '(no subject)')))"
                     ),
                 },
                 "Compose_Display_Subject": {
@@ -692,19 +768,7 @@ definition = {
         },
         "Condition_any_Mail_entities": {
             "runAfter": after("For_each_Mail_entity"), "type": "If",
-            "expression": {
-                "and": [
-                    {
-                        "greater": [
-                            (
-                                "@length(coalesce(body('Entities_-_Get_Mail_Messages')?['MailMessages'], "
-                                "body('Entities_-_Get_Mail_Messages')?['Mailmessages'], json('[]')))"
-                            ),
-                            0,
-                        ]
-                    }
-                ]
-            },
+            "expression": {"and": [{"greater": ["@length(body('Filter_Mail_Entities'))", 0]}]},
             "actions": {
                 "Add_comment_to_incident_V3": {
                     "runAfter": {}, "type": "ApiConnection",
@@ -741,7 +805,7 @@ template = {
             "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident.",
         ],
         "lastUpdateTime": "2026-09-01",
-        "entities": ["Mailmessage"],
+        "entities": ["MailMessage"],
         "tags": ["Enrichment", "Email", "Phishing", "Microsoft Threat Intelligence", "Defender XDR"],
         "support": {"tier": "community"},
     },
