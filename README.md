@@ -34,9 +34,9 @@ Deliberately *not* used: **ip-api.com** (free tier is non-commercial only).
 |---|---|
 | **Geolocation** | Organization + organization type, city, country, state (+ state code), continent, region, coordinates with map link — each with Microsoft's 0–100 confidence rating where provided |
 | **Network / ASN** | ASN, carrier, IP routing type, RIR network name/handle/range/allocation type, Tor exit node, hosting/datacentre, mobile/wireless |
-| **Sign-in context** | Most recent Entra sign-in from this IP: user, app, result, IP address status (known/unknown), trusted named location, known-IP history, country code, proxy and hosting flags, device trust type, device name/ID, compliant + managed, OS, browser, full user agent, sign-in risk level/state/detail, risk events, Conditional Access result, auth requirement |
+| **Sign-in context** | Most recent Entra sign-in plus a dedicated table of up to 100 distinct users seen from this IP across interactive and non-interactive sign-ins, including display name, UPN, counts, failures, applications and first/last seen. The most-recent detail also includes IP address status, trusted location, device trust/name/ID, compliance, OS/browser, risk and Conditional Access. |
 | **Reputation** | AbuseIPDB, optional GreyNoise Community, optional licensed VirusTotal and Shodan InternetDB |
-| **Defender XDR Advanced Hunting** | Direct Microsoft Graph results from DeviceNetworkEvents, DeviceLogonEvents, CloudAppEvents, IdentityLogonEvents, UrlClickEvents, EmailEvents and AlertEvidence—even when those events are not ingested into Log Analytics |
+| **Defender XDR Advanced Hunting** | Direct Microsoft Graph results from DeviceNetworkEvents, DeviceLogonEvents, CloudAppEvents, IdentityLogonEvents, UrlClickEvents, EmailEvents and AlertEvidence—even when those events are not ingested into Log Analytics. DeviceNetworkEvents always returns an explicit `YES`/`NO`, with local/remote match counts, device names/IDs, processes, users, ports and actions. |
 | **Workspace insights** | Client `IPContext` watchlist, UEBA, ASIM network/DNS, threat-intel matches, sightings across SigninLogs, non-interactive sign-ins, AzureActivity, OfficeActivity, SecurityEvent, CommonSecurityLog, DeviceNetworkEvents, VMConnection, W3CIISLog, AWSCloudTrail, and prior alerts referencing the IP |
 
 Each IP gets a **HIGH / MEDIUM / LOW** chip:
@@ -52,6 +52,7 @@ azuredeploy.json                  ARM template — the Logic App playbook (deplo
 build_template.py                 generator for azuredeploy.json (edit here, re-run; don't hand-edit the JSON)
 Invoke-SentinelIPEnrichment.ps1   standalone test/backfill script (does not call Defender XDR)
 kql/IP-Insights.kql               the workspace-insights query, standalone, for tuning in the Logs blade
+kql/IP-Signin-Users.kql           distinct interactive + non-interactive users observed from an IP
 kql/Defender-XDR-IP-Insights.kql  the direct Defender query, for testing in Advanced Hunting
 preview.html                      what the comment looks like, with sample data
 make_preview.py                   regenerates preview.html
@@ -186,6 +187,11 @@ severity or the external reputation verdict.
   sign-ins from the same IP between 90 days ago and the start of the lookback window: any prior
   sign-in ⇒ *Known IP address*, plus a trusted named location ⇒ *Known and trusted*. Change the
   `hist = 90d` line to move that baseline.
+- **The sign-in user table combines `SigninLogs` and `AADNonInteractiveUserSignInLogs`.** It returns
+  display name, UPN, interactive/non-interactive counts, failures, applications and first/last seen
+  for up to 100 distinct users per IP. The cap prevents a shared proxy or NAT address from exceeding
+  Sentinel's practical incident-comment size; use `kql/IP-Signin-Users.kql` and remove its final
+  `take 100` when an uncapped analyst export is required.
 - **No extra Azure RBAC is required for the workspace-native enrichments.** `Log Analytics Reader` covers
   the Watchlist, BehaviorAnalytics and normalized ASIM queries. UEBA and the relevant data
   connectors/parsers still need to be enabled for those rows to return data. Direct Defender
@@ -194,6 +200,9 @@ severity or the external reputation verdict.
 - **Defender results are a separate section and do not currently change HIGH/MEDIUM/LOW.** This
   avoids automatically changing a client incident verdict before its Defender data has been tested.
   The query is capped at 60 summarized rows per IP and `DefenderLookbackDays` cannot exceed 30.
+  Its DeviceNetworkEvents row is always present: `YES` means the IP matched a Defender endpoint's
+  local or remote address; `NO` means no matching endpoint network events were found in the selected
+  Defender lookback, not that the IP is universally safe.
 - **Defender hunting telemetry is protected in Logic App run history.** The direct Microsoft Graph
   action uses secure inputs and outputs; the selected summary is intentionally posted to the
   Sentinel incident comment for analysts who can access that incident.
