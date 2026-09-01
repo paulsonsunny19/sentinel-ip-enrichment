@@ -37,11 +37,13 @@ let look = @{{parameters('DefenderLookbackDays')}}d;
 let Candidates = materialize(
     DeviceInfo
     | where Timestamp > ago(30d)
-    | extend NormalizedName = tolower(DeviceName), NormalizedShortName = tolower(tostring(split(DeviceName, '.')[0]))
+    | extend NormalizedName = tolower(DeviceName),
+             NormalizedShortName = tolower(tostring(split(DeviceName, '.')[0])),
+             NormalizedAzureResourceId = tolower(tostring(column_ifexists('AzureResourceId', '')))
     | where NormalizedName == fqdn or NormalizedName == host or NormalizedShortName == shortName
-        or (isnotempty(azureId) and tolower(AzureResourceId) == azureId)
+        or (isnotempty(azureId) and NormalizedAzureResourceId == azureId)
     | summarize arg_max(Timestamp, *) by DeviceId
-    | extend MatchRank = case(isnotempty(azureId) and tolower(AzureResourceId) == azureId, 4,
+    | extend MatchRank = case(isnotempty(azureId) and NormalizedAzureResourceId == azureId, 4,
                               NormalizedName == fqdn, 3, NormalizedName == host, 2,
                               NormalizedShortName == shortName, 1, 0)
     | sort by MatchRank desc, Timestamp desc
@@ -181,12 +183,41 @@ Candidates
          MacAddresses=tostring(coalesce(toscalar(NetworkInfoSummary | project MacAddresses), dynamic([]))),
          ConnectedNetworks=tostring(coalesce(toscalar(NetworkInfoSummary | project ConnectedNetworks), dynamic([]))),
          DnsSuffixes=tostring(coalesce(toscalar(NetworkInfoSummary | project DnsSuffixes), dynamic([])))
-| project DeviceId, DeviceName, LastSeen=Timestamp, ClientVersion, PublicIP, OSPlatform, OSVersion,
-          OSBuild, OSArchitecture, OSDistribution, OSVersionInfo, DeviceCategory, DeviceType, DeviceSubtype,
-          Vendor, Model, IsAzureADJoined, JoinType, AadDeviceId, LoggedOnUsers, MachineGroup,
-          OnboardingStatus, SensorHealthState, ExposureLevel, AssetValue, IsInternetFacing, IsExcluded,
-          ExclusionReason, MitigationStatus, RegistryDeviceTag, DeviceManualTags, DeviceDynamicTags,
-          ConnectivityType, AzureResourceId, CloudPlatforms, Site, LocalIPAddresses, MacAddresses,
+| project DeviceId, DeviceName, LastSeen=Timestamp,
+          ClientVersion=tostring(column_ifexists('ClientVersion', '')),
+          PublicIP=tostring(column_ifexists('PublicIP', '')),
+          OSPlatform=tostring(column_ifexists('OSPlatform', '')),
+          OSVersion=tostring(column_ifexists('OSVersion', '')),
+          OSBuild=tostring(column_ifexists('OSBuild', '')),
+          OSArchitecture=tostring(column_ifexists('OSArchitecture', '')),
+          OSDistribution=tostring(column_ifexists('OSDistribution', '')),
+          OSVersionInfo=tostring(column_ifexists('OSVersionInfo', '')),
+          DeviceCategory=tostring(column_ifexists('DeviceCategory', '')),
+          DeviceType=tostring(column_ifexists('DeviceType', '')),
+          DeviceSubtype=tostring(column_ifexists('DeviceSubtype', '')),
+          Vendor=tostring(column_ifexists('Vendor', '')),
+          Model=tostring(column_ifexists('Model', '')),
+          IsAzureADJoined=tostring(column_ifexists('IsAzureADJoined', '')),
+          JoinType=tostring(column_ifexists('JoinType', '')),
+          AadDeviceId=tostring(column_ifexists('AadDeviceId', '')),
+          LoggedOnUsers=tostring(column_ifexists('LoggedOnUsers', '')),
+          MachineGroup=tostring(column_ifexists('MachineGroup', '')),
+          OnboardingStatus=tostring(column_ifexists('OnboardingStatus', '')),
+          SensorHealthState=tostring(column_ifexists('SensorHealthState', '')),
+          ExposureLevel=tostring(column_ifexists('ExposureLevel', '')),
+          AssetValue=tostring(column_ifexists('AssetValue', '')),
+          IsInternetFacing=tostring(column_ifexists('IsInternetFacing', '')),
+          IsExcluded=tostring(column_ifexists('IsExcluded', '')),
+          ExclusionReason=tostring(column_ifexists('ExclusionReason', '')),
+          MitigationStatus=tostring(column_ifexists('MitigationStatus', '')),
+          RegistryDeviceTag=tostring(column_ifexists('RegistryDeviceTag', '')),
+          DeviceManualTags=tostring(column_ifexists('DeviceManualTags', '')),
+          DeviceDynamicTags=tostring(column_ifexists('DeviceDynamicTags', '')),
+          ConnectivityType=tostring(column_ifexists('ConnectivityType', '')),
+          AzureResourceId=tostring(column_ifexists('AzureResourceId', '')),
+          CloudPlatforms=tostring(column_ifexists('CloudPlatforms', '')),
+          Site=tostring(column_ifexists('Site', '')),
+          LocalIPAddresses, MacAddresses,
           ConnectedNetworks, DnsSuffixes, Alerts, HighSeverityAlerts, MediumSeverityAlerts, AlertTitles,
           AlertSeverities, AlertSources, AttackTechniques, LastAlert, Vulnerabilities, CriticalVulnerabilities,
           HighVulnerabilities, MediumVulnerabilities, ZeroDayVulnerabilities, NoSecurityUpdateVulnerabilities,
