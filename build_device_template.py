@@ -5,6 +5,36 @@ import json
 import pathlib
 
 
+MANAGED_IDENTITY_RESOURCE = (
+    "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), "
+    "createObject('type', 'UserAssigned', 'userAssignedIdentities', "
+    "createObject(parameters('UserAssignedManagedIdentityResourceId'), createObject())), "
+    "createObject('type', 'SystemAssigned'))]"
+)
+
+
+def managed_identity_authentication(audience=None):
+    """Return an ARM expression that selects system- or user-assigned MSI auth."""
+    system_arguments = ["'type'", "'ManagedServiceIdentity'"]
+    if audience:
+        system_arguments.extend(["'audience'", f"'{audience}'"])
+    user_arguments = system_arguments + [
+        "'identity'",
+        "parameters('UserAssignedManagedIdentityResourceId')",
+    ]
+    return (
+        "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), "
+        f"createObject({', '.join(user_arguments)}), "
+        f"createObject({', '.join(system_arguments)}))]"
+    )
+
+
+CONNECTOR_MANAGED_IDENTITY_AUTH = managed_identity_authentication()
+MICROSOFT_GRAPH_MANAGED_IDENTITY_AUTH = managed_identity_authentication(
+    "https://graph.microsoft.com"
+)
+
+
 HOST_NAME = "@{string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], 'unknown'))}"
 KQL_HOST = "@{replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), '')}"
 KQL_DOMAIN = "@{replace(toLower(string(coalesce(items('For_each_host_entity')?['DnsDomain'], ''))), decodeUriComponent('%27'), '')}"
@@ -480,10 +510,7 @@ definition = {
                                     "Query": DEFENDER_KQL,
                                     "Timespan": "P30D",
                                 },
-                                "authentication": {
-                                    "type": "ManagedServiceIdentity",
-                                    "audience": "https://graph.microsoft.com",
-                                },
+                                "authentication": MICROSOFT_GRAPH_MANAGED_IDENTITY_AUTH,
                             },
                             "runtimeConfiguration": {"secureData": {"properties": ["inputs", "outputs"]}},
                         },
@@ -624,13 +651,13 @@ template = {
         "description": "For each Host entity on a Microsoft Sentinel incident, correlates the host to Microsoft Defender XDR DeviceInfo and summarizes device inventory, EDR health, exposure, alerts, Vulnerability Management findings, configuration gaps, logons, identity authentication, network activity, processes and security-control events. It also queries Sentinel workspace telemetry and an optional client DeviceContext watchlist, calculates a HIGH/MEDIUM/LOW/UNKNOWN triage verdict, and posts one formatted incident comment.",
         "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. For direct Defender XDR enrichment, relevant Defender licensing/onboarding and Microsoft Graph application permission ThreatHunting.Read.All on the playbook managed identity are required.",
         "postDeployment": [
-            "Grant the system-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+            "Grant the selected managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
             "Grant the same identity Log Analytics Reader on the workspace.",
             "Grant the managed identity Microsoft Graph application permission ThreatHunting.Read.All using an app-role assignment and allow time for token propagation.",
             "Authorise the Microsoft Sentinel and Azure Monitor Logs API connections.",
             "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident.",
         ],
-        "lastUpdateTime": "2026-08-31",
+        "lastUpdateTime": "2026-09-01",
         "entities": ["Host"],
         "tags": ["Enrichment", "Device", "Defender XDR", "Vulnerability Management"],
         "support": {"tier": "community"},
@@ -639,6 +666,21 @@ template = {
         "PlaybookName": {
             "type": "string", "defaultValue": "Enrich-Device-IncidentComment",
             "metadata": {"description": "Name of the Logic App playbook."},
+        },
+        "ManagedIdentityType": {
+            "type": "string",
+            "defaultValue": "SystemAssigned",
+            "allowedValues": ["SystemAssigned", "UserAssigned"],
+            "metadata": {
+                "description": "Choose SystemAssigned to create an identity with the Logic App, or UserAssigned to attach an existing client-owned managed identity."
+            },
+        },
+        "UserAssignedManagedIdentityResourceId": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Required only when ManagedIdentityType is UserAssigned. Enter the full resource ID of one existing user-assigned managed identity in this subscription."
+            },
         },
         "WorkspaceName": {"type": "string", "metadata": {"description": "Log Analytics / Sentinel workspace name."}},
         "WorkspaceResourceGroup": {
@@ -694,7 +736,7 @@ template = {
         {
             "type": "Microsoft.Logic/workflows", "apiVersion": "2017-07-01",
             "name": "[parameters('PlaybookName')]", "location": "[resourceGroup().location]",
-            "identity": {"type": "SystemAssigned"},
+            "identity": MANAGED_IDENTITY_RESOURCE,
             "tags": {
                 "hidden-SentinelTemplateName": "Enrich-Device-IncidentComment",
                 "hidden-SentinelTemplateVersion": "1.0",
@@ -713,13 +755,13 @@ template = {
                                 "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
                                 "connectionName": "[variables('SentinelConnectionName')]",
                                 "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
-                                "connectionProperties": {"authentication": {"type": "ManagedServiceIdentity"}},
+                                "connectionProperties": {"authentication": CONNECTOR_MANAGED_IDENTITY_AUTH},
                             },
                             "azuremonitorlogs": {
                                 "connectionId": "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]",
                                 "connectionName": "[variables('MonitorLogsConnectionName')]",
                                 "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
-                                "connectionProperties": {"authentication": {"type": "ManagedServiceIdentity"}},
+                                "connectionProperties": {"authentication": CONNECTOR_MANAGED_IDENTITY_AUTH},
                             },
                         }
                     },
@@ -736,9 +778,14 @@ template = {
     ],
     "outputs": {
         "PlaybookResourceId": {"type": "string", "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"},
+        "ManagedIdentityType": {"type": "string", "value": "[parameters('ManagedIdentityType')]"},
+        "ManagedIdentityResourceId": {
+            "type": "string",
+            "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), parameters('UserAssignedManagedIdentityResourceId'), resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')))]",
+        },
         "ManagedIdentityPrincipalId": {
             "type": "string",
-            "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId]",
+            "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId, reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId)]",
         },
     },
 }
