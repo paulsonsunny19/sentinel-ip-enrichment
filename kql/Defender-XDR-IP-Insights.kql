@@ -10,13 +10,16 @@ union isfuzzy=true
 (DeviceNetworkEvents
  | where Timestamp > ago(look)
  | where RemoteIP == ip or LocalIP == ip
- | summarize C = count(), Devices = make_set(DeviceName, 5),
-             Processes = make_set(InitiatingProcessFileName, 8),
-             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 5),
+ | summarize C = count(), LocalMatches = countif(LocalIP == ip), RemoteMatches = countif(RemoteIP == ip),
+             Devices = make_set(DeviceName, 20), DeviceIds = make_set(DeviceId, 20),
+             Processes = make_set(InitiatingProcessFileName, 12),
+             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 12),
              Ports = make_set(RemotePort, 10), Actions = make_set(ActionType, 6), Last = max(Timestamp)
- | where C > 0
- | project Source = 'Defender XDR - endpoint network',
-           Detail = strcat(C, ' connection event(s) | devices: ', tostring(Devices),
+ | project Source = 'Defender XDR - device network presence',
+           Detail = strcat('Observed in DeviceNetworkEvents: ', iff(C > 0, 'YES', 'NO'),
+                           ' | ', C, ' event(s), ', LocalMatches, ' local-IP match(es), ',
+                           RemoteMatches, ' remote-IP match(es) | devices: ', tostring(Devices),
+                           ' | device IDs: ', tostring(DeviceIds),
                            ' | processes: ', tostring(Processes), ' | users: ', tostring(Users),
                            ' | remote ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last),
 (DeviceLogonEvents
