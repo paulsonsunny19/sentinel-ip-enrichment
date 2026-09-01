@@ -1,0 +1,1055 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Enrich URL entities and post a Sentinel incident comment",
+    "description": "For each URL entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting.",
+    "postDeployment": [
+      "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+      "Grant the same identity Log Analytics Reader on the workspace.",
+      "Grant the managed identity Microsoft Graph application permissions ThreatIntelligence.Read.All and ThreatHunting.Read.All using app-role assignments, then allow time for token propagation.",
+      "Authorise the Microsoft Sentinel and Azure Monitor Logs API connections.",
+      "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident."
+    ],
+    "lastUpdateTime": "2026-09-01",
+    "entities": [
+      "Url"
+    ],
+    "tags": [
+      "Enrichment",
+      "URL",
+      "Microsoft Threat Intelligence",
+      "Defender XDR"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-URL-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "UserAssignedManagedIdentityResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and all managed-identity connections."
+      }
+    },
+    "WorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics / Sentinel workspace name."
+      }
+    },
+    "WorkspaceResourceGroup": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Resource group of the Sentinel workspace."
+      }
+    },
+    "WorkspaceSubscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": {
+        "description": "Subscription of the Sentinel workspace."
+      }
+    },
+    "LookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 90,
+      "metadata": {
+        "description": "How far back to query Sentinel workspace tables."
+      }
+    },
+    "EnableMicrosoftThreatIntelligence": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query Microsoft Threat Intelligence host enrichment through Microsoft Graph. Requires ThreatIntelligence.Read.All application permission."
+      }
+    },
+    "EnableDefenderAdvancedHunting": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query Defender XDR Advanced Hunting through Microsoft Graph. Requires ThreatHunting.Read.All application permission."
+      }
+    },
+    "DefenderLookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 30,
+      "metadata": {
+        "description": "Defender Advanced Hunting lookback from 1 to 30 days."
+      }
+    },
+    "URLContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "URLContext",
+      "metadata": {
+        "description": "Optional client URL/domain watchlist alias. Set blank to disable."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
+    "MonitorLogsConnectionName": "[concat('AzureMonitorLogs-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('MonitorLogsConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('MonitorLogsConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueSet": {
+          "name": "managedIdentityAuth",
+          "values": {}
+        },
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('UserAssignedManagedIdentityResourceId')]": {}
+        }
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "Enrich-URL-IncidentComment",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "LookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "EnableMicrosoftThreatIntelligence": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "EnableDefenderAdvancedHunting": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "DefenderLookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "URLContextWatchlistAlias": {
+              "type": "String",
+              "defaultValue": "URLContext"
+            },
+            "WorkspaceSubscriptionId": {
+              "type": "String"
+            },
+            "WorkspaceResourceGroup": {
+              "type": "String"
+            },
+            "WorkspaceName": {
+              "type": "String"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Init_HtmlBody": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "HtmlBody",
+                    "type": "string",
+                    "value": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#605e5c\">Automated URL enrichment &mdash; playbook <b>@{workflow()?['name']}</b> &middot; run @{formatDateTime(utcNow(), 'yyyy-MM-dd HH:mm')} UTC</div>"
+                  }
+                ]
+              }
+            },
+            "Init_MDTIReputation": {
+              "runAfter": {
+                "Init_HtmlBody": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "MDTIReputation",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_MDTIStatus": {
+              "runAfter": {
+                "Init_MDTIReputation": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "MDTIStatus",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_MDTIHtml": {
+              "runAfter": {
+                "Init_MDTIStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "MDTIHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_DefenderJson": {
+              "runAfter": {
+                "Init_MDTIHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderJson",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_DefenderStatus": {
+              "runAfter": {
+                "Init_DefenderJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderStatus",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_DefenderHtml": {
+              "runAfter": {
+                "Init_DefenderStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_URLs": {
+              "runAfter": {
+                "Init_DefenderHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/url"
+              }
+            },
+            "For_each_URL_entity": {
+              "foreach": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
+              "runAfter": {
+                "Entities_-_Get_URLs": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach",
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "actions": {
+                "Reset_MDTIReputation": {
+                  "runAfter": {},
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "MDTIReputation",
+                    "value": {}
+                  }
+                },
+                "Reset_MDTIStatus": {
+                  "runAfter": {
+                    "Reset_MDTIReputation": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "MDTIStatus",
+                    "value": "disabled by deployment setting"
+                  }
+                },
+                "Reset_MDTIHtml": {
+                  "runAfter": {
+                    "Reset_MDTIStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "MDTIHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_DefenderJson": {
+                  "runAfter": {
+                    "Reset_MDTIHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderJson",
+                    "value": {}
+                  }
+                },
+                "Reset_DefenderStatus": {
+                  "runAfter": {
+                    "Reset_DefenderJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderStatus",
+                    "value": "disabled by deployment setting"
+                  }
+                },
+                "Reset_DefenderHtml": {
+                  "runAfter": {
+                    "Reset_DefenderStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderHtml",
+                    "value": ""
+                  }
+                },
+                "Compose_Clean_URL": {
+                  "runAfter": {
+                    "Reset_DefenderHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@replace(replace(replace(trim(string(coalesce(items('For_each_URL_entity')?['Url'], items('For_each_URL_entity')?['url'], ''))), '[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
+                },
+                "Compose_Normalized_URL": {
+                  "runAfter": {
+                    "Compose_Clean_URL": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(or(startsWith(toLower(outputs('Compose_Clean_URL')), 'http://'), startsWith(toLower(outputs('Compose_Clean_URL')), 'https://')), outputs('Compose_Clean_URL'), concat('https://', outputs('Compose_Clean_URL')))"
+                },
+                "Compose_Display_URL": {
+                  "runAfter": {
+                    "Compose_Normalized_URL": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@replace(replace(replace(replace(outputs('Compose_Normalized_URL'), '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), decodeUriComponent('%22'), '&quot;')"
+                },
+                "Compose_URL_Host": {
+                  "runAfter": {
+                    "Compose_Display_URL": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@toLower(uriHost(outputs('Compose_Normalized_URL')))"
+                },
+                "Condition_MDTI_enabled": {
+                  "runAfter": {
+                    "Compose_URL_Host": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableMicrosoftThreatIntelligence')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_MDTI_Host": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "HTTP_MDTI_Reputation": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '/reputation')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "HTTP_MDTI_WHOIS": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '/whois')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "HTTP_MDTI_Passive_DNS": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '/passiveDns?%24filter=recordType%20eq%20%27A%27&%24orderby=lastSeenDateTime%20desc&%24top=10')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "HTTP_MDTI_Trackers": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '/trackers?%24top=10')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "HTTP_MDTI_Cookies": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '/cookies?%24top=10')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "HTTP_MDTI_Components": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/security/threatIntelligence/hosts/', uriComponent(outputs('Compose_URL_Host')), '/components?%24top=10')}",
+                        "headers": {
+                          "Accept": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_MDTIReputation": {
+                      "runAfter": {
+                        "HTTP_MDTI_Reputation": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "MDTIReputation",
+                        "value": "@if(equals(outputs('HTTP_MDTI_Reputation')?['statusCode'], 200), body('HTTP_MDTI_Reputation'), json('{}'))"
+                      }
+                    },
+                    "Set_MDTIStatus": {
+                      "runAfter": {
+                        "HTTP_MDTI_Host": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ],
+                        "HTTP_MDTI_WHOIS": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ],
+                        "HTTP_MDTI_Passive_DNS": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ],
+                        "HTTP_MDTI_Trackers": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ],
+                        "HTTP_MDTI_Cookies": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ],
+                        "HTTP_MDTI_Components": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ],
+                        "Set_MDTIReputation": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "MDTIStatus",
+                        "value": "@if(equals(outputs('HTTP_MDTI_Reputation')?['statusCode'], 200), concat('available; classification ', string(coalesce(body('HTTP_MDTI_Reputation')?['classification'], 'unknown')), ', score ', string(coalesce(body('HTTP_MDTI_Reputation')?['score'], 'n/a'))), if(equals(outputs('HTTP_MDTI_Host')?['statusCode'], 200), 'available; reputation not returned', concat('unavailable (host HTTP ', string(coalesce(outputs('HTTP_MDTI_Host')?['statusCode'], 'no response')), ', reputation HTTP ', string(coalesce(outputs('HTTP_MDTI_Reputation')?['statusCode'], 'no response')), ')')))"
+                      }
+                    },
+                    "Set_MDTIHtml": {
+                      "runAfter": {
+                        "Set_MDTIStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "MDTIHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Microsoft Threat Intelligence</b> <span style=\"font-weight:400;color:#605e5c\">(Microsoft Graph)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{variables('MDTIStatus')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Defender search</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://security.microsoft.com/search?query=@{uriComponent(outputs('Compose_URL_Host'))}\">open host intelligence</a></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Reputation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{if(equals(outputs('HTTP_MDTI_Reputation')?['statusCode'], 200), concat('<b>', string(coalesce(body('HTTP_MDTI_Reputation')?['classification'], 'unknown')), '</b> &nbsp;|&nbsp; score <b>', string(coalesce(body('HTTP_MDTI_Reputation')?['score'], 'n/a')), '</b>/100 &nbsp;|&nbsp; rules/reports: ', string(coalesce(body('HTTP_MDTI_Reputation')?['rules'], json('[]')))), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_MDTI_Reputation')?['statusCode'], 'no response')), ')'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Host</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{if(equals(outputs('HTTP_MDTI_Host')?['statusCode'], 200), concat('first seen: ', string(coalesce(body('HTTP_MDTI_Host')?['firstSeenDateTime'], 'n/a')), ' &nbsp;|&nbsp; last seen: ', string(coalesce(body('HTTP_MDTI_Host')?['lastSeenDateTime'], 'n/a')), ' &nbsp;|&nbsp; registrar: ', string(coalesce(body('HTTP_MDTI_Host')?['registrar'], 'n/a')), ' &nbsp;|&nbsp; registrant: ', string(coalesce(body('HTTP_MDTI_Host')?['registrant'], 'n/a'))), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_MDTI_Host')?['statusCode'], 'no response')), ')'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">WHOIS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{if(equals(outputs('HTTP_MDTI_WHOIS')?['statusCode'], 200), concat('registered: ', string(coalesce(body('HTTP_MDTI_WHOIS')?['registrationDateTime'], 'n/a')), ' &nbsp;|&nbsp; expires: ', string(coalesce(body('HTTP_MDTI_WHOIS')?['expirationDateTime'], 'n/a')), ' &nbsp;|&nbsp; registrar: ', string(coalesce(body('HTTP_MDTI_WHOIS')?['registrar']?['organization'], 'n/a')), ' &nbsp;|&nbsp; registrant: ', string(coalesce(body('HTTP_MDTI_WHOIS')?['registrant']?['organization'], 'n/a')), ' &nbsp;|&nbsp; abuse: ', string(coalesce(body('HTTP_MDTI_WHOIS')?['abuse']?['email'], 'n/a')), ' &nbsp;|&nbsp; nameservers: ', string(coalesce(body('HTTP_MDTI_WHOIS')?['nameservers'], json('[]')))), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_MDTI_WHOIS')?['statusCode'], 'no response')), ')'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Passive DNS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{if(equals(outputs('HTTP_MDTI_Passive_DNS')?['statusCode'], 200), concat(string(length(coalesce(body('HTTP_MDTI_Passive_DNS')?['value'], json('[]')))), ' record(s): ', string(coalesce(body('HTTP_MDTI_Passive_DNS')?['value'], json('[]')))), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_MDTI_Passive_DNS')?['statusCode'], 'no response')), ')'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Trackers</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(equals(outputs('HTTP_MDTI_Trackers')?['statusCode'], 200), concat(string(length(coalesce(body('HTTP_MDTI_Trackers')?['value'], json('[]')))), ' item(s): ', string(coalesce(body('HTTP_MDTI_Trackers')?['value'], json('[]')))), concat('unavailable HTTP ', string(coalesce(outputs('HTTP_MDTI_Trackers')?['statusCode'], 'n/a'))))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Cookies</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(equals(outputs('HTTP_MDTI_Cookies')?['statusCode'], 200), concat(string(length(coalesce(body('HTTP_MDTI_Cookies')?['value'], json('[]')))), ' item(s): ', string(coalesce(body('HTTP_MDTI_Cookies')?['value'], json('[]')))), concat('unavailable HTTP ', string(coalesce(outputs('HTTP_MDTI_Cookies')?['statusCode'], 'n/a'))))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Components</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{if(equals(outputs('HTTP_MDTI_Components')?['statusCode'], 200), concat(string(length(coalesce(body('HTTP_MDTI_Components')?['value'], json('[]')))), ' item(s): ', string(coalesce(body('HTTP_MDTI_Components')?['value'], json('[]')))), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_MDTI_Components')?['statusCode'], 'no response')), ')'))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_MDTIHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "MDTIHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Microsoft Threat Intelligence</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Disabled by deployment setting.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Condition_Defender_XDR_enabled": {
+                  "runAfter": {
+                    "Condition_MDTI_enabled": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableDefenderAdvancedHunting')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Defender_XDR_URL_Hunting": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
+                        "headers": {
+                          "Content-Type": "application/json; charset=utf-8"
+                        },
+                        "body": {
+                          "Query": "let url = '@{replace(toLower(outputs('Compose_Normalized_URL')), decodeUriComponent('%27'), '')}';\nlet host = '@{replace(toLower(outputs('Compose_URL_Host')), decodeUriComponent('%27'), '')}';\nlet look = @{parameters('DefenderLookbackDays')}d;\nlet ClickSummary = union isfuzzy=true\n(UrlClickEvents\n | where Timestamp > ago(look)\n | extend SafeUrl=tolower(tostring(column_ifexists('Url', ''))),\n          SafeChain=tolower(tostring(column_ifexists('UrlChain', ''))),\n          SafeAction=tostring(column_ifexists('ActionType', '')),\n          SafeUser=tostring(column_ifexists('AccountUpn', '')),\n          SafeWorkload=tostring(column_ifexists('Workload', '')),\n          SafeThreat=tostring(column_ifexists('ThreatTypes', '')),\n          SafeIP=tostring(column_ifexists('IPAddress', '')),\n          SafeClickedThrough=tobool(column_ifexists('IsClickedThrough', false))\n | where SafeUrl == url or SafeUrl contains host or SafeChain contains url or SafeChain contains host\n | summarize UrlClicks=count(), ThreatClicks=countif(isnotempty(SafeThreat)),\n             ClickedThrough=countif(SafeClickedThrough == true), ClickUsers=make_set(SafeUser, 20),\n             ClickActions=make_set(SafeAction, 10), ClickWorkloads=make_set(SafeWorkload, 10),\n             ClickThreatTypes=make_set(SafeThreat, 10), ClickIPs=make_set(SafeIP, 12), LastClick=max(Timestamp)),\n(datatable(UrlClicks:long, ThreatClicks:long, ClickedThrough:long, ClickUsers:dynamic,\n           ClickActions:dynamic, ClickWorkloads:dynamic, ClickThreatTypes:dynamic, ClickIPs:dynamic,\n           LastClick:datetime)[]);\nlet EmailSummary = union isfuzzy=true\n(EmailUrlInfo\n | where Timestamp > ago(look)\n | extend SafeUrl=tolower(tostring(column_ifexists('Url', ''))),\n          SafeDomain=tolower(tostring(column_ifexists('UrlDomain', ''))),\n          SafeLocation=tostring(column_ifexists('UrlLocation', '')),\n          SafeMessage=tostring(column_ifexists('NetworkMessageId', ''))\n | where SafeUrl == url or SafeUrl contains host or SafeDomain == host\n | summarize EmailReferences=count(), EmailMessages=dcount(SafeMessage),\n             UrlLocations=make_set(SafeLocation, 10), LastEmailReference=max(Timestamp)),\n(datatable(EmailReferences:long, EmailMessages:long, UrlLocations:dynamic, LastEmailReference:datetime)[]);\nlet DeviceSummary = union isfuzzy=true\n(DeviceNetworkEvents\n | where Timestamp > ago(look)\n | extend SafeRemoteUrl=tolower(tostring(column_ifexists('RemoteUrl', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeRemoteIP=tostring(column_ifexists('RemoteIP', '')),\n          SafeProcess=tostring(column_ifexists('InitiatingProcessFileName', ''))\n | where SafeRemoteUrl == url or SafeRemoteUrl contains host\n | summarize DeviceConnections=count(), Devices=make_set(SafeDevice, 20),\n             RemoteIPs=make_set(SafeRemoteIP, 15), NetworkProcesses=make_set(SafeProcess, 15),\n             LastDeviceConnection=max(Timestamp)),\n(datatable(DeviceConnections:long, Devices:dynamic, RemoteIPs:dynamic, NetworkProcesses:dynamic,\n           LastDeviceConnection:datetime)[]);\nlet AlertSummary = union isfuzzy=true\n(AlertEvidence\n | where Timestamp > ago(look)\n | extend SafeRemoteUrl=tolower(tostring(column_ifexists('RemoteUrl', ''))),\n          SafeTitle=tostring(column_ifexists('Title', '')),\n          SafeSeverity=tostring(column_ifexists('Severity', '')),\n          SafeService=tostring(column_ifexists('ServiceSource', '')),\n          SafeRole=tostring(column_ifexists('EvidenceRole', '')),\n          SafeAlertId=tostring(column_ifexists('AlertId', ''))\n | where SafeRemoteUrl == url or SafeRemoteUrl contains host\n | summarize Alerts=dcount(SafeAlertId), HighAlerts=dcountif(SafeAlertId, tolower(SafeSeverity) == 'high'),\n             AlertTitles=make_set(SafeTitle, 15), AlertSeverities=make_set(SafeSeverity, 8),\n             AlertServices=make_set(SafeService, 8), EvidenceRoles=make_set(SafeRole, 8),\n             LastAlert=max(Timestamp)),\n(datatable(Alerts:long, HighAlerts:long, AlertTitles:dynamic, AlertSeverities:dynamic,\n           AlertServices:dynamic, EvidenceRoles:dynamic, LastAlert:datetime)[]);\ndatatable(Seed:int)[1]\n| extend UrlClicks=tolong(coalesce(toscalar(ClickSummary | project UrlClicks), 0)),\n         ThreatClicks=tolong(coalesce(toscalar(ClickSummary | project ThreatClicks), 0)),\n         ClickedThrough=tolong(coalesce(toscalar(ClickSummary | project ClickedThrough), 0)),\n         ClickUsers=tostring(coalesce(toscalar(ClickSummary | project ClickUsers), dynamic([]))),\n         ClickActions=tostring(coalesce(toscalar(ClickSummary | project ClickActions), dynamic([]))),\n         ClickWorkloads=tostring(coalesce(toscalar(ClickSummary | project ClickWorkloads), dynamic([]))),\n         ClickThreatTypes=tostring(coalesce(toscalar(ClickSummary | project ClickThreatTypes), dynamic([]))),\n         ClickIPs=tostring(coalesce(toscalar(ClickSummary | project ClickIPs), dynamic([]))),\n         LastClick=toscalar(ClickSummary | project LastClick),\n         EmailReferences=tolong(coalesce(toscalar(EmailSummary | project EmailReferences), 0)),\n         EmailMessages=tolong(coalesce(toscalar(EmailSummary | project EmailMessages), 0)),\n         UrlLocations=tostring(coalesce(toscalar(EmailSummary | project UrlLocations), dynamic([]))),\n         LastEmailReference=toscalar(EmailSummary | project LastEmailReference),\n         DeviceConnections=tolong(coalesce(toscalar(DeviceSummary | project DeviceConnections), 0)),\n         Devices=tostring(coalesce(toscalar(DeviceSummary | project Devices), dynamic([]))),\n         RemoteIPs=tostring(coalesce(toscalar(DeviceSummary | project RemoteIPs), dynamic([]))),\n         NetworkProcesses=tostring(coalesce(toscalar(DeviceSummary | project NetworkProcesses), dynamic([]))),\n         LastDeviceConnection=toscalar(DeviceSummary | project LastDeviceConnection),\n         Alerts=tolong(coalesce(toscalar(AlertSummary | project Alerts), 0)),\n         HighAlerts=tolong(coalesce(toscalar(AlertSummary | project HighAlerts), 0)),\n         AlertTitles=tostring(coalesce(toscalar(AlertSummary | project AlertTitles), dynamic([]))),\n         AlertSeverities=tostring(coalesce(toscalar(AlertSummary | project AlertSeverities), dynamic([]))),\n         AlertServices=tostring(coalesce(toscalar(AlertSummary | project AlertServices), dynamic([]))),\n         EvidenceRoles=tostring(coalesce(toscalar(AlertSummary | project EvidenceRoles), dynamic([]))),\n         LastAlert=toscalar(AlertSummary | project LastAlert)\n| extend TotalObservations=UrlClicks + EmailReferences + DeviceConnections + Alerts\n| project-away Seed",
+                          "Timespan": "P30D"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Compose_Defender_Rows": {
+                      "runAfter": {
+                        "HTTP_Defender_XDR_URL_Hunting": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(equals(outputs('HTTP_Defender_XDR_URL_Hunting')?['statusCode'], 200), coalesce(body('HTTP_Defender_XDR_URL_Hunting')?['results'], json('[]')), json('[]'))"
+                    },
+                    "Set_DefenderJson": {
+                      "runAfter": {
+                        "Compose_Defender_Rows": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderJson",
+                        "value": "@if(greater(length(outputs('Compose_Defender_Rows')), 0), first(outputs('Compose_Defender_Rows')), json('{}'))"
+                      }
+                    },
+                    "Set_DefenderStatus": {
+                      "runAfter": {
+                        "Set_DefenderJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderStatus",
+                        "value": "@if(not(equals(outputs('HTTP_Defender_XDR_URL_Hunting')?['statusCode'], 200)), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_Defender_XDR_URL_Hunting')?['statusCode'], 'no response')), ')'), if(greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), 'activity found', 'no activity observed'))"
+                      }
+                    },
+                    "Set_DefenderHtml": {
+                      "runAfter": {
+                        "Set_DefenderStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender XDR URL activity &mdash; last @{parameters('DefenderLookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{variables('DefenderStatus')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Safe Links clicks</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['UrlClicks'], 0))}</b> total &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['ThreatClicks'], 0))} threat-tagged &nbsp;|&nbsp; <b>@{string(coalesce(variables('DefenderJson')?['ClickedThrough'], 0))} clicked through</b></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Users</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ClickUsers'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Click context</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">actions: @{string(coalesce(variables('DefenderJson')?['ClickActions'], '[]'))} &nbsp;|&nbsp; workloads: @{string(coalesce(variables('DefenderJson')?['ClickWorkloads'], '[]'))} &nbsp;|&nbsp; threats: @{string(coalesce(variables('DefenderJson')?['ClickThreatTypes'], '[]'))} &nbsp;|&nbsp; IPs: @{string(coalesce(variables('DefenderJson')?['ClickIPs'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Email references</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['EmailReferences'], 0))} reference(s) / @{string(coalesce(variables('DefenderJson')?['EmailMessages'], 0))} message(s) &nbsp;|&nbsp; locations: @{string(coalesce(variables('DefenderJson')?['UrlLocations'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last email reference</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['LastEmailReference'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Device connections</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['DeviceConnections'], 0))} connection(s) &nbsp;|&nbsp; devices: @{string(coalesce(variables('DefenderJson')?['Devices'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Processes / IPs</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['NetworkProcesses'], '[]'))} &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['RemoteIPs'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Alerts</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['Alerts'], 0))}</b> alert(s), <b>@{string(coalesce(variables('DefenderJson')?['HighAlerts'], 0))} high</b></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Alert titles</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['AlertTitles'], '[]'))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_DefenderHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "DefenderHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Defender XDR URL activity</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Disabled by deployment setting.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Run_KQL_workspace_context": {
+                  "runAfter": {
+                    "Condition_Defender_XDR_enabled": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "let url = '@{replace(toLower(outputs('Compose_Normalized_URL')), decodeUriComponent('%27'), '')}';\nlet host = '@{replace(toLower(outputs('Compose_URL_Host')), decodeUriComponent('%27'), '')}';\nlet look = @{parameters('LookbackDays')}d;\nlet watchAlias = '@{replace(parameters('URLContextWatchlistAlias'), decodeUriComponent('%27'), '')}';\nlet TI = union isfuzzy=true\n(ThreatIntelIndicators\n | extend SafeKey=tostring(column_ifexists('ObservableKey', '')),\n          SafeValue=tolower(tostring(column_ifexists('ObservableValue', ''))),\n          SafeConfidence=toint(column_ifexists('Confidence', 0)),\n          SafeName=tostring(column_ifexists('Name', '')),\n          SafeTags=tostring(column_ifexists('Tags', dynamic([]))),\n          SafeModified=todatetime(column_ifexists('Modified', datetime(null))),\n          SafeDeleted=tobool(column_ifexists('IsDeleted', false))\n | where SafeDeleted == false and SafeKey in ('url:value', 'domain-name:value')\n | where SafeValue == url or SafeValue == host\n | summarize arg_max(TimeGenerated, *) by Id\n | project Source=iff(SafeConfidence >= 70, 'Sentinel TI - high', 'Sentinel TI'),\n           Detail=strcat('confidence ', SafeConfidence, '/100 | ', SafeName, ' | tags: ', SafeTags),\n           Last=coalesce(SafeModified, TimeGenerated)),\n(ThreatIntelligenceIndicator\n | extend SafeUrl=tolower(tostring(column_ifexists('Url', ''))),\n          SafeDomain=tolower(tostring(column_ifexists('DomainName', ''))),\n          SafeConfidence=toint(column_ifexists('ConfidenceScore', 0)),\n          SafeThreat=tostring(column_ifexists('ThreatType', '')),\n          SafeDescription=tostring(column_ifexists('Description', '')),\n          SafeActive=tobool(column_ifexists('Active', true)),\n          SafeExpiration=todatetime(column_ifexists('ExpirationDateTime', datetime(null)))\n | where SafeActive == true and (SafeUrl == url or SafeDomain == host)\n | summarize arg_max(TimeGenerated, *) by IndicatorId\n | project Source=iff(SafeConfidence >= 70, 'Sentinel TI - high', 'Sentinel TI - legacy'),\n           Detail=strcat('confidence ', SafeConfidence, '/100 | ', SafeThreat, ' | ', SafeDescription),\n           Last=TimeGenerated),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nlet ClientContext = union isfuzzy=true\n(Watchlist\n | where isnotempty(watchAlias) and WatchlistAlias == watchAlias\n | where tolower(SearchKey) == url or tolower(SearchKey) == host\n | summarize arg_max(TimeGenerated, *) by SearchKey\n | extend W=todynamic(WatchlistItem)\n | extend Classification=tolower(coalesce(tostring(W.Classification), tostring(W.Risk), 'unclassified'))\n | project Source=iff(Classification in ('critical', 'high', 'malicious', 'knownbad', 'phishing'),\n                      'Client URL context - critical', 'Client URL context'),\n           Detail=strcat('classification: ', Classification, ' | owner: ', coalesce(tostring(W.Owner), 'n/a'),\n                         ' | campaign: ', coalesce(tostring(W.Campaign), 'n/a'),\n                         ' | notes: ', coalesce(tostring(W.Description), tostring(W.Notes), 'none')),\n           Last=coalesce(todatetime(W.LastUpdated), TimeGenerated)),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nlet Alerts = union isfuzzy=true\n(SecurityAlert\n | where TimeGenerated > ago(look)\n | extend EntityText=tolower(tostring(Entities))\n | where EntityText contains url or EntityText contains host\n | summarize AlertCount=count(), High=countif(tolower(AlertSeverity) == 'high'),\n             Names=make_set(AlertName, 15), Severities=make_set(AlertSeverity, 8),\n             Products=make_set(ProductName, 8), Last=max(TimeGenerated)\n | project Source=iff(High > 0, 'Sentinel high alert', 'Sentinel alerts'),\n           Detail=strcat(AlertCount, ' alert(s), ', High, ' high | ', tostring(Names),\n                         ' | severity: ', tostring(Severities), ' | products: ', tostring(Products)), Last),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nlet Observations = union isfuzzy=true\n(UrlClickEvents\n | where TimeGenerated > ago(look)\n | extend SafeUrl=tolower(tostring(column_ifexists('Url', ''))),\n          SafeChain=tolower(tostring(column_ifexists('UrlChain', ''))),\n          SafeUser=tostring(column_ifexists('AccountUpn', '')),\n          SafeAction=tostring(column_ifexists('ActionType', '')),\n          SafeThreat=tostring(column_ifexists('ThreatTypes', ''))\n | where SafeUrl == url or SafeUrl contains host or SafeChain contains url or SafeChain contains host\n | summarize Count=count(), Users=make_set(SafeUser, 20), Actions=make_set(SafeAction, 10),\n             Threats=make_set(SafeThreat, 10), Last=max(TimeGenerated)\n | project Source='Safe Links clicks',\n           Detail=strcat(Count, ' click(s) | users: ', tostring(Users), ' | actions: ', tostring(Actions),\n                         ' | threats: ', tostring(Threats)), Last),\n(EmailUrlInfo\n | where TimeGenerated > ago(look)\n | extend SafeUrl=tolower(tostring(column_ifexists('Url', ''))),\n          SafeDomain=tolower(tostring(column_ifexists('UrlDomain', ''))),\n          SafeLocation=tostring(column_ifexists('UrlLocation', ''))\n | where SafeUrl == url or SafeUrl contains host or SafeDomain == host\n | summarize Count=count(), Locations=make_set(SafeLocation, 10), Last=max(TimeGenerated)\n | project Source='Email URL references', Detail=strcat(Count, ' reference(s) | locations: ', tostring(Locations)), Last),\n(DeviceNetworkEvents\n | where TimeGenerated > ago(look)\n | extend SafeUrl=tolower(tostring(column_ifexists('RemoteUrl', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeProcess=tostring(column_ifexists('InitiatingProcessFileName', ''))\n | where SafeUrl == url or SafeUrl contains host\n | summarize Count=count(), Devices=make_set(SafeDevice, 20), Processes=make_set(SafeProcess, 15), Last=max(TimeGenerated)\n | project Source='Device URL connections',\n           Detail=strcat(Count, ' connection(s) | devices: ', tostring(Devices), ' | processes: ', tostring(Processes)), Last),\n(CommonSecurityLog\n | where TimeGenerated > ago(look)\n | extend SafeUrl=tolower(tostring(column_ifexists('RequestURL', ''))),\n          SafeHost=tolower(tostring(column_ifexists('DestinationHostName', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeAction=tostring(column_ifexists('DeviceAction', ''))\n | where SafeUrl == url or SafeUrl contains host or SafeHost == host\n | summarize Count=count(), Devices=make_set(SafeDevice, 15), Actions=make_set(SafeAction, 10), Last=max(TimeGenerated)\n | project Source='CommonSecurityLog web activity',\n           Detail=strcat(Count, ' event(s) | devices: ', tostring(Devices), ' | actions: ', tostring(Actions)), Last),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nunion TI, ClientContext, Alerts, Observations\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
+                    "path": "/queryData",
+                    "queries": {
+                      "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                      "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                      "resourcetype": "Log Analytics Workspace",
+                      "resourcename": "@parameters('WorkspaceName')",
+                      "timerange": "Set in query"
+                    }
+                  }
+                },
+                "Compose_Workspace_Rows": {
+                  "runAfter": {
+                    "Run_KQL_workspace_context": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(actions('Run_KQL_workspace_context')?['status'], 'Succeeded'), coalesce(body('Run_KQL_workspace_context')?['value'], json('[]')), json('[]'))"
+                },
+                "Filter_High_Workspace_Findings": {
+                  "runAfter": {
+                    "Compose_Workspace_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Query",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "where": "@or(equals(item()?['Source'], 'Sentinel TI - high'), equals(item()?['Source'], 'Sentinel high alert'), equals(item()?['Source'], 'Client URL context - critical'))"
+                  }
+                },
+                "Select_Workspace_Rows": {
+                  "runAfter": {
+                    "Filter_High_Workspace_Findings": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Select",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "select": "<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{item()?['Source']}</b></td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{replace(replace(replace(replace(string(item()?['Detail']), '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), decodeUriComponent('%22'), '&quot;')}</td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Last']}</td></tr>"
+                  }
+                },
+                "Compose_Verdict": {
+                  "runAfter": {
+                    "Select_Workspace_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'malicious'), greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 70), greater(int(coalesce(variables('DefenderJson')?['ThreatClicks'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['HighAlerts'], 0)), 0), greater(length(body('Filter_High_Workspace_Findings')), 0)), 'HIGH', if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'suspicious'), greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 40), greater(int(coalesce(variables('DefenderJson')?['ClickedThrough'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['Alerts'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), greater(length(outputs('Compose_Workspace_Rows')), 0)), 'MEDIUM', if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'benign'), equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'neutral')), 'LOW', 'UNKNOWN')))"
+                },
+                "Compose_VerdictStyle": {
+                  "runAfter": {
+                    "Compose_Verdict": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('Compose_Verdict'), 'HIGH'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#a4262c', if(equals(outputs('Compose_Verdict'), 'MEDIUM'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#986f0b', if(equals(outputs('Compose_Verdict'), 'LOW'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#107c10', 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#605e5c')))"
+                },
+                "Compose_VerdictReason": {
+                  "runAfter": {
+                    "Compose_VerdictStyle": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@concat('MDTI: ', variables('MDTIStatus'), ' &middot; Defender: ', variables('DefenderStatus'), ' &middot; observations: ', string(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), ' &middot; workspace rows: ', string(length(outputs('Compose_Workspace_Rows'))))"
+                },
+                "Append_URL_block": {
+                  "runAfter": {
+                    "Compose_VerdictReason": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "AppendToStringVariable",
+                  "inputs": {
+                    "name": "HtmlBody",
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nURL enrichment &mdash; <code>@{outputs('Compose_Display_URL')}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Normalized URL</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Display_URL')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Host</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{outputs('Compose_URL_Host')}</b></td></tr>\n</table>\n@{variables('MDTIHtml')}\n@{variables('DefenderHtml')}\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
+                  }
+                }
+              }
+            },
+            "Condition_any_URL_entities": {
+              "runAfter": {
+                "For_each_URL_entity": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "and": [
+                  {
+                    "greater": [
+                      "@length(coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]')))",
+                      0
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Add_comment_to_incident_V3": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>@{variables('HtmlBody')}</p>"
+                    },
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              },
+              "azuremonitorlogs": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]",
+                "connectionName": "[variables('MonitorLogsConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              }
+            }
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableMicrosoftThreatIntelligence": {
+            "value": "[parameters('EnableMicrosoftThreatIntelligence')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "URLContextWatchlistAlias": {
+            "value": "[parameters('URLContextWatchlistAlias')]"
+          },
+          "WorkspaceSubscriptionId": {
+            "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "WorkspaceResourceGroup": {
+            "value": "[parameters('WorkspaceResourceGroup')]"
+          },
+          "WorkspaceName": {
+            "value": "[parameters('WorkspaceName')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityType": {
+      "type": "string",
+      "value": "UserAssigned"
+    },
+    "ManagedIdentityResourceId": {
+      "type": "string",
+      "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId]"
+    }
+  }
+}
