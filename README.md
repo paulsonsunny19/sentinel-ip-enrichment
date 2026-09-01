@@ -10,9 +10,18 @@ logons, network and process activity, plus Sentinel workspace context. See
 [`README-DEVICE.md`](README-DEVICE.md) and deploy `azuredeploy-device.json`. The IP and device
 playbooks are independent and can both be attached to the same incident automation rule.
 
-A third, separate **URL enrichment playbook** enriches Sentinel URL entities with Microsoft
-Defender Threat Intelligence (MDTI), Defender XDR URL activity, Sentinel threat intelligence and
-workspace sightings. See [`README-URL.md`](README-URL.md) and deploy `azuredeploy-url.json`.
+A third, separate **URL + Domain enrichment playbook** enriches Sentinel URL entities and
+DNS-resolution Domain entities with Microsoft Defender Threat Intelligence (MDTI), Defender XDR URL
+activity, Sentinel threat intelligence and workspace sightings. See
+[`README-URL.md`](README-URL.md) and deploy `azuredeploy-url.json`.
+
+A fourth, separate **file hash enrichment playbook** enriches Sentinel FileHash entities
+(SHA256/SHA1/MD5) with Defender's native `FileProfile()` file intelligence, Defender XDR file/process
+activity, and Sentinel threat intelligence and workspace sightings. See
+[`README-FILEHASH.md`](README-FILEHASH.md) and deploy `azuredeploy-filehash.json`.
+
+All four playbooks — IP, device, URL/domain, and file hash — are independent and can all be attached
+to the same incident automation rule.
 
 ## Sources and what they cost
 
@@ -66,10 +75,15 @@ build_device_template.py                   generator for the device template
 kql/Defender-XDR-Device-Enrichment.kql     standalone device Advanced Hunting validation query
 README-DEVICE.md                           device sources, verdict logic, permissions and deployment
 
-azuredeploy-url.json                       separate URL enrichment ARM template
-build_url_template.py                      generator for the URL template
-kql/Defender-XDR-URL-Enrichment.kql        standalone Defender URL validation query
-README-URL.md                              URL sources, verdict logic, permissions and deployment
+azuredeploy-url.json                       separate URL + Domain enrichment ARM template
+build_url_template.py                      generator for the URL + Domain template
+kql/Defender-XDR-URL-Enrichment.kql        standalone Defender URL/domain validation query
+README-URL.md                              URL/domain sources, verdict logic, permissions and deployment
+
+azuredeploy-filehash.json                  separate file hash enrichment ARM template
+build_filehash_template.py                 generator for the file hash template
+kql/Defender-XDR-FileHash-Enrichment.kql   standalone Defender file hash validation query
+README-FILEHASH.md                         file hash sources, verdict logic, permissions and deployment
 ```
 
 ## Deploy (about 10 minutes)

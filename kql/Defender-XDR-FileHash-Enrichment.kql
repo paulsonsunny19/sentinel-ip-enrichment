@@ -1,0 +1,112 @@
+// Run in Microsoft Defender > Hunting > Advanced Hunting.
+// Supply a SHA256, SHA1, or MD5 hash. This validation query mirrors the file hash playbook's
+// Defender sources without assuming optional columns. FileProfile() is Defender's native file
+// reputation/prevalence/signing enrichment function; it is the file-hash equivalent of MDTI host
+// enrichment, reached natively instead of through the (host-only) MDTI Graph API.
+let HashInput = tolower('0000000000000000000000000000000000000000000000000000000000000000');
+let Lookback = 14d;
+let FileProfileRow = FileProfile(HashInput, 1);
+FileProfileRow
+| project Timestamp = now(),
+          Source = 'FileProfile()',
+          Detail = strcat('type: ', tostring(column_ifexists('FileType', '')),
+                          ' | signed: ', tostring(column_ifexists('IsSigned', false)),
+                          ' | cert valid: ', tostring(column_ifexists('IsCertificateValid', false)),
+                          ' | MS root: ', tostring(column_ifexists('IsRootSignerMicrosoft', false)),
+                          ' | signer: ', tostring(column_ifexists('Signer', '')),
+                          ' | prevalence: ', tostring(column_ifexists('GlobalPrevalence', 0))),
+          Hash = HashInput,
+          Device = '',
+          User = ''
+| union isfuzzy=true
+(
+    DeviceFileEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeSha256 = tolower(tostring(column_ifexists('SHA256', ''))),
+             SafeSha1 = tolower(tostring(column_ifexists('SHA1', ''))),
+             SafeMd5 = tolower(tostring(column_ifexists('MD5', ''))),
+             SafeDevice = tostring(column_ifexists('DeviceName', '')),
+             SafeFileName = tostring(column_ifexists('FileName', '')),
+             SafeAction = tostring(column_ifexists('ActionType', ''))
+    | where SafeSha256 == HashInput or SafeSha1 == HashInput or SafeMd5 == HashInput
+    | project Timestamp,
+              Source = 'Device file event',
+              Detail = strcat('action: ', SafeAction, ' | file: ', SafeFileName),
+              Hash = HashInput,
+              Device = SafeDevice,
+              User = ''
+),
+(
+    DeviceProcessEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeSha256 = tolower(tostring(column_ifexists('SHA256', ''))),
+             SafeSha1 = tolower(tostring(column_ifexists('SHA1', ''))),
+             SafeMd5 = tolower(tostring(column_ifexists('MD5', ''))),
+             SafeDevice = tostring(column_ifexists('DeviceName', '')),
+             SafeAccount = tostring(column_ifexists('AccountName', '')),
+             SafeCommandLine = tostring(column_ifexists('ProcessCommandLine', ''))
+    | where SafeSha256 == HashInput or SafeSha1 == HashInput or SafeMd5 == HashInput
+    | project Timestamp,
+              Source = 'Process execution',
+              Detail = strcat('command line: ', SafeCommandLine),
+              Hash = HashInput,
+              Device = SafeDevice,
+              User = SafeAccount
+),
+(
+    DeviceEvents
+    | where Timestamp > ago(Lookback)
+    | where ActionType has_any ('AntivirusDetection', 'AntivirusReport', 'AntivirusScanCompleted',
+                                 'AsrRuleBlocked', 'ExploitGuardBlocked')
+    | extend SafeSha256 = tolower(tostring(column_ifexists('SHA256', ''))),
+             SafeSha1 = tolower(tostring(column_ifexists('SHA1', ''))),
+             SafeMd5 = tolower(tostring(column_ifexists('MD5', ''))),
+             SafeDevice = tostring(column_ifexists('DeviceName', '')),
+             SafeAction = tostring(column_ifexists('ActionType', ''))
+    | where SafeSha256 == HashInput or SafeSha1 == HashInput or SafeMd5 == HashInput
+    | project Timestamp,
+              Source = 'AV/EDR detection',
+              Detail = strcat('action: ', SafeAction),
+              Hash = HashInput,
+              Device = SafeDevice,
+              User = ''
+),
+(
+    EmailAttachmentInfo
+    | where Timestamp > ago(Lookback)
+    | extend SafeSha256 = tolower(tostring(column_ifexists('SHA256', ''))),
+             SafeFileName = tostring(column_ifexists('FileName', '')),
+             SafeMessage = tostring(column_ifexists('NetworkMessageId', ''))
+    | where SafeSha256 == HashInput
+    | project Timestamp,
+              Source = 'Email attachment',
+              Detail = strcat('file: ', SafeFileName, ' | message: ', SafeMessage),
+              Hash = HashInput,
+              Device = '',
+              User = ''
+),
+(
+    AlertEvidence
+    | where Timestamp > ago(Lookback)
+    | extend SafeSha256 = tolower(tostring(column_ifexists('SHA256', ''))),
+             SafeSha1 = tolower(tostring(column_ifexists('SHA1', ''))),
+             SafeMd5 = tolower(tostring(column_ifexists('MD5', ''))),
+             SafeTitle = tostring(column_ifexists('Title', '')),
+             SafeSeverity = tostring(column_ifexists('Severity', '')),
+             SafeDevice = tostring(column_ifexists('DeviceName', '')),
+             SafeUser = tostring(column_ifexists('AccountUpn', '')),
+             SafeAlertId = tostring(column_ifexists('AlertId', ''))
+    | where SafeSha256 == HashInput or SafeSha1 == HashInput or SafeMd5 == HashInput
+    | project Timestamp,
+              Source = 'Alert evidence',
+              Detail = strcat('title: ', SafeTitle, ' | severity: ', SafeSeverity, ' | alert: ', SafeAlertId),
+              Hash = HashInput,
+              Device = SafeDevice,
+              User = SafeUser
+),
+(
+    datatable(Timestamp:datetime, Source:string, Detail:string, Hash:string,
+              Device:string, User:string)[]
+)
+| order by Timestamp desc
+| take 200

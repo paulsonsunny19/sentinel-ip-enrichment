@@ -308,11 +308,12 @@ VERDICT_REASON = (
 
 URL_BLOCK = f"""<hr style="border:0;border-top:1px solid #e1dfdd;margin:16px 0">
 <div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px">
-URL enrichment &mdash; <code>@{{outputs('Compose_Display_URL')}}</code>
+@{{outputs('Compose_Entity_Kind')}} enrichment &mdash; <code>@{{outputs('Compose_Display_URL')}}</code>
 <span style="@{{outputs('Compose_VerdictStyle')}}">@{{outputs('Compose_Verdict')}}</span>
 </div>
 <div style="font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px">@{{outputs('Compose_VerdictReason')}}</div>
 <table style="{TBL}">
+<tr><th style="{TH}">Type</th><td style="{TD}">@{{outputs('Compose_Entity_Kind')}}</td></tr>
 <tr><th style="{TH}">Normalized URL</th><td style="{TD}">@{{outputs('Compose_Display_URL')}}</td></tr>
 <tr><th style="{TH}">Host</th><td style="{TD}"><b>@{{outputs('Compose_URL_Host')}}</b></td></tr>
 </table>
@@ -424,9 +425,49 @@ definition = {
                 "path": "/entities/url",
             },
         },
+        "Entities_-_Get_Domains": {
+            "runAfter": after("Init_DefenderHtml"), "type": "ApiConnection",
+            "inputs": {
+                "host": {"connection": {"name": SENTINEL_CONN}},
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/dnsresolution",
+            },
+        },
+        "Select_URL_Values": {
+            "runAfter": after("Entities_-_Get_URLs"), "type": "Select",
+            "inputs": {
+                "from": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
+                "select": "@coalesce(item()?['Url'], item()?['url'], '')",
+            },
+        },
+        "Select_Domain_Values": {
+            "runAfter": after("Entities_-_Get_Domains"), "type": "Select",
+            "inputs": {
+                "from": (
+                    "@coalesce(body('Entities_-_Get_Domains')?['DNSResolutions'], "
+                    "body('Entities_-_Get_Domains')?['Domains'], json('[]'))"
+                ),
+                "select": (
+                    "@coalesce(item()?['DomainName'], item()?['domainName'], "
+                    "item()?['Domain'], item()?['domain'], '')"
+                ),
+            },
+        },
+        "Compose_Combined_Targets": {
+            "runAfter": after("Select_URL_Values", "Select_Domain_Values"), "type": "Compose",
+            "inputs": "@union(body('Select_URL_Values'), body('Select_Domain_Values'))",
+        },
+        "Filter_Combined_Targets": {
+            "runAfter": after("Compose_Combined_Targets"), "type": "Query",
+            "inputs": {
+                "from": "@outputs('Compose_Combined_Targets')",
+                "where": "@not(equals(trim(coalesce(item(), '')), ''))",
+            },
+        },
         "For_each_URL_entity": {
-            "foreach": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
-            "runAfter": after("Entities_-_Get_URLs"),
+            "foreach": "@body('Filter_Combined_Targets')",
+            "runAfter": after("Filter_Combined_Targets"),
             "type": "Foreach",
             "runtimeConfiguration": {"concurrency": {"repetitions": 1}},
             "actions": {
@@ -457,9 +498,8 @@ definition = {
                 "Compose_Clean_URL": {
                     "runAfter": after("Reset_DefenderHtml"), "type": "Compose",
                     "inputs": (
-                        "@replace(replace(replace(trim(string(coalesce(items('For_each_URL_entity')?['Url'], "
-                        "items('For_each_URL_entity')?['url'], ''))), '[.]', '.'), 'hxxps://', 'https://'), "
-                        "'hxxp://', 'http://')"
+                        "@replace(replace(replace(trim(string(items('For_each_URL_entity'))), "
+                        "'[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
                     ),
                 },
                 "Compose_Normalized_URL": {
@@ -481,8 +521,16 @@ definition = {
                     "runAfter": after("Compose_Display_URL"), "type": "Compose",
                     "inputs": "@toLower(uriHost(outputs('Compose_Normalized_URL')))",
                 },
+                "Compose_Entity_Kind": {
+                    "runAfter": after("Compose_URL_Host"), "type": "Compose",
+                    "inputs": (
+                        "@if(or(startsWith(toLower(trim(items('For_each_URL_entity'))), 'http://'), "
+                        "startsWith(toLower(trim(items('For_each_URL_entity'))), 'https://'), "
+                        "contains(items('For_each_URL_entity'), '/')), 'URL', 'Domain')"
+                    ),
+                },
                 "Condition_MDTI_enabled": {
-                    "runAfter": after("Compose_URL_Host"), "type": "If",
+                    "runAfter": after("Compose_Entity_Kind"), "type": "If",
                     "expression": {"and": [{"equals": ["@parameters('EnableMicrosoftThreatIntelligence')", True]}]},
                     "actions": {
                         "HTTP_MDTI_Host": graph_get("HTTP_MDTI_Host", ""),
@@ -657,7 +705,7 @@ definition = {
         },
         "Condition_any_URL_entities": {
             "runAfter": after("For_each_URL_entity"), "type": "If",
-            "expression": {"and": [{"greater": ["@length(coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]')))", 0]}]},
+            "expression": {"and": [{"greater": ["@length(body('Filter_Combined_Targets'))", 0]}]},
             "actions": {
                 "Add_comment_to_incident_V3": {
                     "runAfter": {}, "type": "ApiConnection",
@@ -683,8 +731,8 @@ template = {
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
     "contentVersion": "1.0.0.0",
     "metadata": {
-        "title": "Enrich URL entities and post a Sentinel incident comment",
-        "description": "For each URL entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment.",
+        "title": "Enrich URL and Domain entities and post a Sentinel incident comment",
+        "description": "For each URL or DNS-resolution Domain entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment per entity.",
         "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting.",
         "postDeployment": [
             "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
@@ -694,8 +742,8 @@ template = {
             "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident.",
         ],
         "lastUpdateTime": "2026-09-01",
-        "entities": ["Url"],
-        "tags": ["Enrichment", "URL", "Microsoft Threat Intelligence", "Defender XDR"],
+        "entities": ["Url", "DNSResolution"],
+        "tags": ["Enrichment", "URL", "Domain", "Microsoft Threat Intelligence", "Defender XDR"],
         "support": {"tier": "community"},
     },
     "parameters": {

@@ -1,26 +1,35 @@
-# Sentinel URL Enrichment → Incident Comment
+# Sentinel URL + Domain Enrichment → Incident Comment
 
-This is a separate Microsoft Sentinel playbook for **URL entities**. It uses one required,
-client-owned **user-assigned managed identity (UAMI)** for the Logic App, Microsoft Sentinel and
-Azure Monitor Logs connections, Microsoft Defender Threat Intelligence, and Defender XDR
-Advanced Hunting. It never enables a system-assigned identity.
+This is a separate Microsoft Sentinel playbook for **URL entities and DNS-resolution Domain
+entities**, handled together because MDTI and Defender XDR enrichment for both is host-based. It
+uses one required, client-owned **user-assigned managed identity (UAMI)** for the Logic App,
+Microsoft Sentinel and Azure Monitor Logs connections, Microsoft Defender Threat Intelligence, and
+Defender XDR Advanced Hunting. It never enables a system-assigned identity.
 
-The URL and IP/device playbooks are independent, so all three can run from the same incident
-automation rule.
+The URL/Domain, IP, device, and file hash playbooks are independent, so all four can run from the
+same incident automation rule.
 
 ## What it adds
 
-| Source | URL enrichment placed in the incident comment |
+| Source | URL/Domain enrichment placed in the incident comment |
 |---|---|
 | **Microsoft Defender Threat Intelligence (MDTI)** | Host reputation/classification and score, attributed reputation rules and report links, first/last seen, WHOIS, passive DNS, trackers, cookies, and detected web components |
-| **Defender XDR Advanced Hunting** | Safe Links clicks and users, click-through actions and threat labels, email URL references, devices/processes/IPs connecting to the URL, and alert evidence |
+| **Defender XDR Advanced Hunting** | Safe Links clicks and users, click-through actions and threat labels, email URL references, devices/processes/IPs connecting to the URL/domain, and alert evidence |
 | **Sentinel workspace** | Current `ThreatIntelIndicators`, legacy TI fallback, prior alerts, Safe Links/email/device/firewall observations, and optional client watchlist context |
 | **Triage** | A HIGH / MEDIUM / LOW / UNKNOWN verdict and a concise source-status summary |
 
-MDTI's Graph enrichment endpoints are host-based. The playbook extracts the hostname from each
-URL for MDTI, while retaining the complete normalized URL for Defender hunting and workspace
-searches. It defangs common `hxxp` and `[.]` forms before querying and HTML-escapes the displayed
-URL before it is added to the incident.
+The playbook pulls both URL entities (`Entities - Get URLs`) and DNS-resolution Domain entities
+(`Entities - Get DNS`, `DomainName`) off the incident, merges the two into one list, and runs every
+item through the same per-entity logic. A bare domain (e.g. `evil.example.com`) is treated as its
+own host with no path; a URL keeps its full path/query for Defender hunting and workspace
+searches. Each entity's comment block is labelled **URL** or **Domain** so the two stay
+distinguishable when an incident carries both.
+
+MDTI's Graph enrichment endpoints are host-based, so both entity kinds query the same MDTI/Defender
+host-reputation calls. The playbook extracts the hostname from each item for MDTI, while retaining
+the complete normalized URL (or bare domain) for Defender hunting and workspace searches. It
+defangs common `hxxp` and `[.]` forms before querying and HTML-escapes the displayed value before
+it is added to the incident.
 
 ## Files
 
@@ -28,7 +37,7 @@ URL before it is added to the incident.
 |---|---|
 | `azuredeploy-url.json` | Deployable ARM template |
 | `build_url_template.py` | Source generator for the ARM template |
-| `kql/Defender-XDR-URL-Enrichment.kql` | Standalone query to validate the Defender data available for one URL |
+| `kql/Defender-XDR-URL-Enrichment.kql` | Standalone query to validate the Defender data available for one URL or domain host |
 
 ## Prerequisites and permissions
 
@@ -145,15 +154,18 @@ the hostname in `SearchKey`. Optional columns are `Classification` (or `Risk`), 
 
 - **HIGH**: MDTI malicious or score ≥ 70, a threat-tagged Safe Links click, a high Defender alert,
   a high-confidence Sentinel TI match, or critical client watchlist context.
-- **MEDIUM**: MDTI suspicious or score ≥ 40, a click-through, any Defender URL observation/alert,
-  or any workspace observation.
+- **MEDIUM**: MDTI suspicious or score ≥ 40, a click-through, any Defender URL/domain
+  observation/alert, or any workspace observation.
 - **LOW**: MDTI reports benign or neutral and no stronger signal exists.
-- **UNKNOWN**: no source returned enough information to classify the URL.
+- **UNKNOWN**: no source returned enough information to classify the URL or domain.
 
 ## Operational notes
 
-- One URL can make seven MDTI Graph calls, one Defender hunting call, and one workspace query. The
-  URL loop is deliberately sequential to control quota and shared-variable updates.
+- One URL or domain can make seven MDTI Graph calls, one Defender hunting call, and one workspace
+  query. The loop over combined URL and domain entities is deliberately sequential to control quota
+  and shared-variable updates.
+- URL and domain entities are merged into one list (`Filter_Combined_Targets`) before the loop, so
+  the same per-entity actions handle both; the comment block's **Type** row shows `URL` or `Domain`.
 - Full URLs can contain tokens or personal data in their path/query string. The incident comment
   contains the URL, so establish a client policy for redaction if those values are sensitive.
 - Disable either Microsoft Graph source at deployment if the tenant has not granted its permission;
@@ -161,4 +173,9 @@ the hostname in `SearchKey`. Optional columns are `Classification` (or `Risk`), 
 - If Defender returns HTTP 400, copy the query from
   `kql/Defender-XDR-URL-Enrichment.kql` into Advanced Hunting. Its use of `column_ifexists()` and
   fuzzy unions is intentional so absent optional tables/columns fail open.
+- If the tenant's `Entities - Get DNS` action returns Domain entities under a differently-cased
+  response key or field name than `DNSResolutions`/`DomainName`, the domain side simply resolves to
+  an empty list and URL enrichment continues unaffected; check the action's raw output in the Logic
+  App run history and adjust `Entities_-_Get_Domains`/`Select_Domain_Values` in
+  `build_url_template.py` if needed.
 

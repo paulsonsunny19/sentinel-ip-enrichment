@@ -1,0 +1,682 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Enrich file hash entities and post a Sentinel incident comment",
+    "description": "For each FileHash entity on a Microsoft Sentinel incident, queries Defender XDR Advanced Hunting's native FileProfile() enrichment function for Microsoft's own file reputation, prevalence, and code-signing data, correlates DeviceFileEvents, DeviceProcessEvents, AV/EDR detections, EmailAttachmentInfo attachments and AlertEvidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatHunting.Read.All is required for Defender Advanced Hunting.",
+    "postDeployment": [
+      "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+      "Grant the same identity Log Analytics Reader on the workspace.",
+      "Grant the managed identity the Microsoft Graph application permission ThreatHunting.Read.All using an app-role assignment, then allow time for token propagation.",
+      "Authorise the Microsoft Sentinel and Azure Monitor Logs API connections.",
+      "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident."
+    ],
+    "lastUpdateTime": "2026-09-01",
+    "entities": [
+      "FileHash"
+    ],
+    "tags": [
+      "Enrichment",
+      "FileHash",
+      "Defender XDR",
+      "FileProfile"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-FileHash-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "UserAssignedManagedIdentityResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and all managed-identity connections."
+      }
+    },
+    "WorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics / Sentinel workspace name."
+      }
+    },
+    "WorkspaceResourceGroup": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Resource group of the Sentinel workspace."
+      }
+    },
+    "WorkspaceSubscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": {
+        "description": "Subscription of the Sentinel workspace."
+      }
+    },
+    "LookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 90,
+      "metadata": {
+        "description": "How far back to query Sentinel workspace tables."
+      }
+    },
+    "EnableDefenderAdvancedHunting": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query Defender XDR Advanced Hunting (including the FileProfile() enrichment function) through Microsoft Graph. Requires ThreatHunting.Read.All application permission."
+      }
+    },
+    "DefenderLookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 30,
+      "metadata": {
+        "description": "Defender Advanced Hunting activity lookback from 1 to 30 days. FileProfile() reputation/prevalence itself is not bounded by this window."
+      }
+    },
+    "FileHashContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "FileHashContext",
+      "metadata": {
+        "description": "Optional client file-hash watchlist alias. Set blank to disable."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
+    "MonitorLogsConnectionName": "[concat('AzureMonitorLogs-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('MonitorLogsConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('MonitorLogsConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueSet": {
+          "name": "managedIdentityAuth",
+          "values": {}
+        },
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('UserAssignedManagedIdentityResourceId')]": {}
+        }
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "Enrich-FileHash-IncidentComment",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "LookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "EnableDefenderAdvancedHunting": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "DefenderLookbackDays": {
+              "type": "Int",
+              "defaultValue": 14
+            },
+            "FileHashContextWatchlistAlias": {
+              "type": "String",
+              "defaultValue": "FileHashContext"
+            },
+            "WorkspaceSubscriptionId": {
+              "type": "String"
+            },
+            "WorkspaceResourceGroup": {
+              "type": "String"
+            },
+            "WorkspaceName": {
+              "type": "String"
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Init_HtmlBody": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "HtmlBody",
+                    "type": "string",
+                    "value": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#605e5c\">Automated file hash enrichment &mdash; playbook <b>@{workflow()?['name']}</b> &middot; run @{formatDateTime(utcNow(), 'yyyy-MM-dd HH:mm')} UTC</div>"
+                  }
+                ]
+              }
+            },
+            "Init_DefenderJson": {
+              "runAfter": {
+                "Init_HtmlBody": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderJson",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_DefenderStatus": {
+              "runAfter": {
+                "Init_DefenderJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderStatus",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_DefenderHtml": {
+              "runAfter": {
+                "Init_DefenderStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DefenderHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_File_Hashes": {
+              "runAfter": {
+                "Init_DefenderHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/filehash"
+              }
+            },
+            "For_each_FileHash_entity": {
+              "foreach": "@coalesce(body('Entities_-_Get_File_Hashes')?['FileHashes'], json('[]'))",
+              "runAfter": {
+                "Entities_-_Get_File_Hashes": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach",
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "actions": {
+                "Reset_DefenderJson": {
+                  "runAfter": {},
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderJson",
+                    "value": {}
+                  }
+                },
+                "Reset_DefenderStatus": {
+                  "runAfter": {
+                    "Reset_DefenderJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderStatus",
+                    "value": "disabled by deployment setting"
+                  }
+                },
+                "Reset_DefenderHtml": {
+                  "runAfter": {
+                    "Reset_DefenderStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DefenderHtml",
+                    "value": ""
+                  }
+                },
+                "Compose_Clean_Hash": {
+                  "runAfter": {
+                    "Reset_DefenderHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@trim(string(coalesce(items('For_each_FileHash_entity')?['HashValue'], items('For_each_FileHash_entity')?['hashValue'], items('For_each_FileHash_entity')?['Value'], items('For_each_FileHash_entity')?['value'], '')))"
+                },
+                "Compose_Display_Hash": {
+                  "runAfter": {
+                    "Compose_Clean_Hash": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@replace(replace(replace(replace(outputs('Compose_Clean_Hash'), '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), decodeUriComponent('%22'), '&quot;')"
+                },
+                "Compose_Hash_Algorithm": {
+                  "runAfter": {
+                    "Compose_Display_Hash": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@coalesce(items('For_each_FileHash_entity')?['Algorithm'], items('For_each_FileHash_entity')?['algorithm'], if(equals(length(outputs('Compose_Clean_Hash')), 64), 'SHA256', if(equals(length(outputs('Compose_Clean_Hash')), 40), 'SHA1', if(equals(length(outputs('Compose_Clean_Hash')), 32), 'MD5', 'Unknown'))))"
+                },
+                "Condition_Defender_XDR_enabled": {
+                  "runAfter": {
+                    "Compose_Hash_Algorithm": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableDefenderAdvancedHunting')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Defender_XDR_FileHash_Hunting": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
+                        "headers": {
+                          "Content-Type": "application/json; charset=utf-8"
+                        },
+                        "body": {
+                          "Query": "let hash = '@{replace(toLower(outputs('Compose_Clean_Hash')), decodeUriComponent('%27'), '')}';\nlet look = @{parameters('DefenderLookbackDays')}d;\nlet FileProfileRow = FileProfile(hash, 1);\nlet FileEventSummary = union isfuzzy=true\n(DeviceFileEvents\n | where Timestamp > ago(look)\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeSha1=tolower(tostring(column_ifexists('SHA1', ''))),\n          SafeMd5=tolower(tostring(column_ifexists('MD5', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeFileName=tostring(column_ifexists('FileName', '')),\n          SafeFolder=tostring(column_ifexists('FolderPath', '')),\n          SafeAction=tostring(column_ifexists('ActionType', ''))\n | where SafeSha256 == hash or SafeSha1 == hash or SafeMd5 == hash\n | summarize FileEvents=count(), FileDevices=make_set(SafeDevice, 20), FileNames=make_set(SafeFileName, 15),\n             FolderPaths=make_set(SafeFolder, 10), FileActions=make_set(SafeAction, 10), LastFileEvent=max(Timestamp)),\n(datatable(FileEvents:long, FileDevices:dynamic, FileNames:dynamic, FolderPaths:dynamic,\n           FileActions:dynamic, LastFileEvent:datetime)[]);\nlet ProcessSummary = union isfuzzy=true\n(DeviceProcessEvents\n | where Timestamp > ago(look)\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeSha1=tolower(tostring(column_ifexists('SHA1', ''))),\n          SafeMd5=tolower(tostring(column_ifexists('MD5', ''))),\n          SafeInitSha256=tolower(tostring(column_ifexists('InitiatingProcessSHA256', ''))),\n          SafeInitSha1=tolower(tostring(column_ifexists('InitiatingProcessSHA1', ''))),\n          SafeInitMd5=tolower(tostring(column_ifexists('InitiatingProcessMD5', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeCommandLine=tostring(column_ifexists('ProcessCommandLine', '')),\n          SafeAccount=tostring(column_ifexists('AccountName', ''))\n | where SafeSha256 == hash or SafeSha1 == hash or SafeMd5 == hash\n     or SafeInitSha256 == hash or SafeInitSha1 == hash or SafeInitMd5 == hash\n | summarize ProcessEvents=count(), ProcessDevices=make_set(SafeDevice, 20),\n             CommandLines=make_set(SafeCommandLine, 15), ProcessUsers=make_set(SafeAccount, 20),\n             LastProcessEvent=max(Timestamp)),\n(datatable(ProcessEvents:long, ProcessDevices:dynamic, CommandLines:dynamic, ProcessUsers:dynamic,\n           LastProcessEvent:datetime)[]);\nlet DetectionSummary = union isfuzzy=true\n(DeviceEvents\n | where Timestamp > ago(look)\n | where ActionType has_any ('AntivirusDetection', 'AntivirusReport', 'AntivirusScanCompleted',\n                              'AsrRuleBlocked', 'ExploitGuardBlocked')\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeSha1=tolower(tostring(column_ifexists('SHA1', ''))),\n          SafeMd5=tolower(tostring(column_ifexists('MD5', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeAction=tostring(column_ifexists('ActionType', ''))\n | extend SafeThreat=tostring(coalesce(column_ifexists('ThreatName', ''),\n                               tostring(parse_json(tostring(column_ifexists('AdditionalFields', '{}'))).ThreatName)))\n | where SafeSha256 == hash or SafeSha1 == hash or SafeMd5 == hash\n | summarize Detections=count(), DetectionDevices=make_set(SafeDevice, 20),\n             ThreatNames=make_set(SafeThreat, 15), DetectionActions=make_set(SafeAction, 10),\n             LastDetection=max(Timestamp)),\n(datatable(Detections:long, DetectionDevices:dynamic, ThreatNames:dynamic, DetectionActions:dynamic,\n           LastDetection:datetime)[]);\nlet EmailSummary = union isfuzzy=true\n(EmailAttachmentInfo\n | where Timestamp > ago(look)\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeFileName=tostring(column_ifexists('FileName', '')),\n          SafeFileType=tostring(column_ifexists('FileType', '')),\n          SafeMessage=tostring(column_ifexists('NetworkMessageId', ''))\n | where SafeSha256 == hash\n | summarize EmailAttachments=count(), EmailMessages=dcount(SafeMessage),\n             EmailFileNames=make_set(SafeFileName, 15), EmailFileTypes=make_set(SafeFileType, 10),\n             LastEmailAttachment=max(Timestamp)),\n(datatable(EmailAttachments:long, EmailMessages:long, EmailFileNames:dynamic, EmailFileTypes:dynamic,\n           LastEmailAttachment:datetime)[]);\nlet AlertSummary = union isfuzzy=true\n(AlertEvidence\n | where Timestamp > ago(look)\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeSha1=tolower(tostring(column_ifexists('SHA1', ''))),\n          SafeMd5=tolower(tostring(column_ifexists('MD5', ''))),\n          SafeTitle=tostring(column_ifexists('Title', '')),\n          SafeSeverity=tostring(column_ifexists('Severity', '')),\n          SafeService=tostring(column_ifexists('ServiceSource', '')),\n          SafeRole=tostring(column_ifexists('EvidenceRole', '')),\n          SafeAlertId=tostring(column_ifexists('AlertId', ''))\n | where SafeSha256 == hash or SafeSha1 == hash or SafeMd5 == hash\n | summarize Alerts=dcount(SafeAlertId), HighAlerts=dcountif(SafeAlertId, tolower(SafeSeverity) == 'high'),\n             AlertTitles=make_set(SafeTitle, 15), AlertSeverities=make_set(SafeSeverity, 8),\n             AlertServices=make_set(SafeService, 8), EvidenceRoles=make_set(SafeRole, 8),\n             LastAlert=max(Timestamp)),\n(datatable(Alerts:long, HighAlerts:long, AlertTitles:dynamic, AlertSeverities:dynamic,\n           AlertServices:dynamic, EvidenceRoles:dynamic, LastAlert:datetime)[]);\ndatatable(Seed:int)[1]\n| extend GlobalPrevalence=tolong(coalesce(toscalar(FileProfileRow | project P=column_ifexists('GlobalPrevalence', 0)), 0)),\n         FileFirstSeen=toscalar(FileProfileRow | project P=column_ifexists('GlobalFirstSeen', datetime(null))),\n         FileLastSeen=toscalar(FileProfileRow | project P=column_ifexists('GlobalLastSeen', datetime(null))),\n         FileType=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('FileType', '')), '')),\n         FileSize=tolong(coalesce(toscalar(FileProfileRow | project P=column_ifexists('Size', 0)), 0)),\n         IsSigned=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('IsSigned', false)), false)),\n         IsCertificateValid=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('IsCertificateValid', false)), false)),\n         IsRootSignerMicrosoft=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('IsRootSignerMicrosoft', false)), false)),\n         Signer=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('Signer', '')), '')),\n         Issuer=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('Issuer', '')), '')),\n         CompanyName=tostring(coalesce(toscalar(FileProfileRow | project P=column_ifexists('FilePublisher', '')), '')),\n         FileHasRow=tolong(coalesce(toscalar(FileProfileRow | summarize C=count()), 0)),\n         FileEvents=tolong(coalesce(toscalar(FileEventSummary | project FileEvents), 0)),\n         FileDevices=tostring(coalesce(toscalar(FileEventSummary | project FileDevices), dynamic([]))),\n         FileNames=tostring(coalesce(toscalar(FileEventSummary | project FileNames), dynamic([]))),\n         FolderPaths=tostring(coalesce(toscalar(FileEventSummary | project FolderPaths), dynamic([]))),\n         LastFileEvent=toscalar(FileEventSummary | project LastFileEvent),\n         ProcessEvents=tolong(coalesce(toscalar(ProcessSummary | project ProcessEvents), 0)),\n         ProcessDevices=tostring(coalesce(toscalar(ProcessSummary | project ProcessDevices), dynamic([]))),\n         CommandLines=tostring(coalesce(toscalar(ProcessSummary | project CommandLines), dynamic([]))),\n         ProcessUsers=tostring(coalesce(toscalar(ProcessSummary | project ProcessUsers), dynamic([]))),\n         LastProcessEvent=toscalar(ProcessSummary | project LastProcessEvent),\n         Detections=tolong(coalesce(toscalar(DetectionSummary | project Detections), 0)),\n         DetectionDevices=tostring(coalesce(toscalar(DetectionSummary | project DetectionDevices), dynamic([]))),\n         ThreatNames=tostring(coalesce(toscalar(DetectionSummary | project ThreatNames), dynamic([]))),\n         LastDetection=toscalar(DetectionSummary | project LastDetection),\n         EmailAttachments=tolong(coalesce(toscalar(EmailSummary | project EmailAttachments), 0)),\n         EmailMessages=tolong(coalesce(toscalar(EmailSummary | project EmailMessages), 0)),\n         EmailFileNames=tostring(coalesce(toscalar(EmailSummary | project EmailFileNames), dynamic([]))),\n         LastEmailAttachment=toscalar(EmailSummary | project LastEmailAttachment),\n         Alerts=tolong(coalesce(toscalar(AlertSummary | project Alerts), 0)),\n         HighAlerts=tolong(coalesce(toscalar(AlertSummary | project HighAlerts), 0)),\n         AlertTitles=tostring(coalesce(toscalar(AlertSummary | project AlertTitles), dynamic([]))),\n         AlertSeverities=tostring(coalesce(toscalar(AlertSummary | project AlertSeverities), dynamic([]))),\n         LastAlert=toscalar(AlertSummary | project LastAlert)\n| extend TotalObservations=FileEvents + ProcessEvents + Detections + EmailAttachments + Alerts\n| project-away Seed",
+                          "Timespan": "P30D"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Compose_Defender_Rows": {
+                      "runAfter": {
+                        "HTTP_Defender_XDR_FileHash_Hunting": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(equals(outputs('HTTP_Defender_XDR_FileHash_Hunting')?['statusCode'], 200), coalesce(body('HTTP_Defender_XDR_FileHash_Hunting')?['results'], json('[]')), json('[]'))"
+                    },
+                    "Set_DefenderJson": {
+                      "runAfter": {
+                        "Compose_Defender_Rows": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderJson",
+                        "value": "@if(greater(length(outputs('Compose_Defender_Rows')), 0), first(outputs('Compose_Defender_Rows')), json('{}'))"
+                      }
+                    },
+                    "Set_DefenderStatus": {
+                      "runAfter": {
+                        "Set_DefenderJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderStatus",
+                        "value": "@if(not(equals(outputs('HTTP_Defender_XDR_FileHash_Hunting')?['statusCode'], 200)), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_Defender_XDR_FileHash_Hunting')?['statusCode'], 'no response')), ')'), if(equals(int(coalesce(variables('DefenderJson')?['FileHasRow'], 0)), 0), 'available; no FileProfile record (unseen by Defender telemetry)', if(greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), 'activity found', 'no activity observed')))"
+                      }
+                    },
+                    "Set_DefenderHtml": {
+                      "runAfter": {
+                        "Set_DefenderStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DefenderHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Microsoft Defender native file intelligence</b> <span style=\"font-weight:400;color:#605e5c\">(Defender XDR Advanced Hunting &mdash; FileProfile())</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{variables('DefenderStatus')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Signing</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">signed: <b>@{string(coalesce(variables('DefenderJson')?['IsSigned'], 'false'))}</b> &nbsp;|&nbsp; certificate valid: <b>@{string(coalesce(variables('DefenderJson')?['IsCertificateValid'], 'false'))}</b> &nbsp;|&nbsp; Microsoft root: <b>@{string(coalesce(variables('DefenderJson')?['IsRootSignerMicrosoft'], 'false'))}</b></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Signer / issuer</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['Signer'], 'n/a'))} / @{string(coalesce(variables('DefenderJson')?['Issuer'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">File</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">type: @{string(coalesce(variables('DefenderJson')?['FileType'], 'n/a'))} &nbsp;|&nbsp; size: @{string(coalesce(variables('DefenderJson')?['FileSize'], 'n/a'))} bytes &nbsp;|&nbsp; publisher: @{string(coalesce(variables('DefenderJson')?['CompanyName'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Global prevalence</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['GlobalPrevalence'], 0))}</b> device(s) org-wide (Microsoft telemetry)</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">First / last seen</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['FileFirstSeen'], 'n/a'))} &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['FileLastSeen'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">File events</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['FileEvents'], 0))} event(s) &nbsp;|&nbsp; devices: @{string(coalesce(variables('DefenderJson')?['FileDevices'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">File names / paths</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['FileNames'], '[]'))} &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['FolderPaths'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Process events</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ProcessEvents'], 0))} event(s) &nbsp;|&nbsp; devices: @{string(coalesce(variables('DefenderJson')?['ProcessDevices'], '[]'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Users / command lines</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ProcessUsers'], '[]'))} &nbsp;|&nbsp; @{string(coalesce(variables('DefenderJson')?['CommandLines'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">AV / EDR detections</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['Detections'], 0))}</b> detection(s)</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Threat names</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['ThreatNames'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Email attachments</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['EmailAttachments'], 0))} attachment(s) / @{string(coalesce(variables('DefenderJson')?['EmailMessages'], 0))} message(s)</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Attachment names</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['EmailFileNames'], '[]'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Alerts</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('DefenderJson')?['Alerts'], 0))}</b> alert(s), <b>@{string(coalesce(variables('DefenderJson')?['HighAlerts'], 0))} high</b></td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Alert titles</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('DefenderJson')?['AlertTitles'], '[]'))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_DefenderHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "DefenderHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Microsoft Defender native file intelligence</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Disabled by deployment setting.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Run_KQL_workspace_context": {
+                  "runAfter": {
+                    "Condition_Defender_XDR_enabled": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "let hash = '@{replace(toLower(outputs('Compose_Clean_Hash')), decodeUriComponent('%27'), '')}';\nlet look = @{parameters('LookbackDays')}d;\nlet watchAlias = '@{replace(parameters('FileHashContextWatchlistAlias'), decodeUriComponent('%27'), '')}';\nlet TI = union isfuzzy=true\n(ThreatIntelIndicators\n | extend SafeValue=tolower(tostring(column_ifexists('ObservableValue', ''))),\n          SafeConfidence=toint(column_ifexists('Confidence', 0)),\n          SafeName=tostring(column_ifexists('Name', '')),\n          SafeTags=tostring(column_ifexists('Tags', dynamic([]))),\n          SafeModified=todatetime(column_ifexists('Modified', datetime(null))),\n          SafeDeleted=tobool(column_ifexists('IsDeleted', false))\n | where SafeDeleted == false and SafeValue == hash\n | summarize arg_max(TimeGenerated, *) by Id\n | project Source=iff(SafeConfidence >= 70, 'Sentinel TI - high', 'Sentinel TI'),\n           Detail=strcat('confidence ', SafeConfidence, '/100 | ', SafeName, ' | tags: ', SafeTags),\n           Last=coalesce(SafeModified, TimeGenerated)),\n(ThreatIntelligenceIndicator\n | extend SafeHash=tolower(tostring(column_ifexists('FileHashValue', ''))),\n          SafeHashType=tostring(column_ifexists('FileHashType', '')),\n          SafeConfidence=toint(column_ifexists('ConfidenceScore', 0)),\n          SafeThreat=tostring(column_ifexists('ThreatType', '')),\n          SafeDescription=tostring(column_ifexists('Description', '')),\n          SafeActive=tobool(column_ifexists('Active', true))\n | where SafeActive == true and SafeHash == hash\n | summarize arg_max(TimeGenerated, *) by IndicatorId\n | project Source=iff(SafeConfidence >= 70, 'Sentinel TI - high', 'Sentinel TI - legacy'),\n           Detail=strcat('confidence ', SafeConfidence, '/100 | ', SafeThreat, ' (', SafeHashType, ') | ', SafeDescription),\n           Last=TimeGenerated),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nlet ClientContext = union isfuzzy=true\n(Watchlist\n | where isnotempty(watchAlias) and WatchlistAlias == watchAlias\n | where tolower(SearchKey) == hash\n | summarize arg_max(TimeGenerated, *) by SearchKey\n | extend W=todynamic(WatchlistItem)\n | extend Classification=tolower(coalesce(tostring(W.Classification), tostring(W.Risk), 'unclassified'))\n | project Source=iff(Classification in ('critical', 'high', 'malicious', 'knownbad', 'malware'),\n                      'Client file hash context - critical', 'Client file hash context'),\n           Detail=strcat('classification: ', Classification, ' | owner: ', coalesce(tostring(W.Owner), 'n/a'),\n                         ' | campaign: ', coalesce(tostring(W.Campaign), 'n/a'),\n                         ' | notes: ', coalesce(tostring(W.Description), tostring(W.Notes), 'none')),\n           Last=coalesce(todatetime(W.LastUpdated), TimeGenerated)),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nlet Alerts = union isfuzzy=true\n(SecurityAlert\n | where TimeGenerated > ago(look)\n | extend EntityText=tolower(tostring(Entities))\n | where EntityText contains hash\n | summarize AlertCount=count(), High=countif(tolower(AlertSeverity) == 'high'),\n             Names=make_set(AlertName, 15), Severities=make_set(AlertSeverity, 8),\n             Products=make_set(ProductName, 8), Last=max(TimeGenerated)\n | project Source=iff(High > 0, 'Sentinel high alert', 'Sentinel alerts'),\n           Detail=strcat(AlertCount, ' alert(s), ', High, ' high | ', tostring(Names),\n                         ' | severity: ', tostring(Severities), ' | products: ', tostring(Products)), Last),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nlet Observations = union isfuzzy=true\n(DeviceFileEvents\n | where TimeGenerated > ago(look)\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeSha1=tolower(tostring(column_ifexists('SHA1', ''))),\n          SafeMd5=tolower(tostring(column_ifexists('MD5', ''))),\n          SafeDevice=tostring(column_ifexists('DeviceName', '')),\n          SafeFileName=tostring(column_ifexists('FileName', ''))\n | where SafeSha256 == hash or SafeSha1 == hash or SafeMd5 == hash\n | summarize Count=count(), Devices=make_set(SafeDevice, 20), FileNames=make_set(SafeFileName, 15), Last=max(TimeGenerated)\n | project Source='Ingested device file events',\n           Detail=strcat(Count, ' event(s) | devices: ', tostring(Devices), ' | names: ', tostring(FileNames)), Last),\n(EmailAttachmentInfo\n | where TimeGenerated > ago(look)\n | extend SafeSha256=tolower(tostring(column_ifexists('SHA256', ''))),\n          SafeFileName=tostring(column_ifexists('FileName', ''))\n | where SafeSha256 == hash\n | summarize Count=count(), FileNames=make_set(SafeFileName, 15), Last=max(TimeGenerated)\n | project Source='Ingested email attachments', Detail=strcat(Count, ' attachment(s) | names: ', tostring(FileNames)), Last),\n(datatable(Source:string, Detail:string, Last:datetime)[]);\nunion TI, ClientContext, Alerts, Observations\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
+                    "path": "/queryData",
+                    "queries": {
+                      "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                      "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                      "resourcetype": "Log Analytics Workspace",
+                      "resourcename": "@parameters('WorkspaceName')",
+                      "timerange": "Set in query"
+                    }
+                  }
+                },
+                "Compose_Workspace_Rows": {
+                  "runAfter": {
+                    "Run_KQL_workspace_context": [
+                      "Succeeded",
+                      "Failed",
+                      "TimedOut"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(actions('Run_KQL_workspace_context')?['status'], 'Succeeded'), coalesce(body('Run_KQL_workspace_context')?['value'], json('[]')), json('[]'))"
+                },
+                "Filter_High_Workspace_Findings": {
+                  "runAfter": {
+                    "Compose_Workspace_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Query",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "where": "@or(equals(item()?['Source'], 'Sentinel TI - high'), equals(item()?['Source'], 'Sentinel high alert'), equals(item()?['Source'], 'Client file hash context - critical'))"
+                  }
+                },
+                "Select_Workspace_Rows": {
+                  "runAfter": {
+                    "Filter_High_Workspace_Findings": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Select",
+                  "inputs": {
+                    "from": "@outputs('Compose_Workspace_Rows')",
+                    "select": "<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{item()?['Source']}</b></td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{replace(replace(replace(replace(string(item()?['Detail']), '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), decodeUriComponent('%22'), '&quot;')}</td><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{item()?['Last']}</td></tr>"
+                  }
+                },
+                "Compose_Verdict": {
+                  "runAfter": {
+                    "Select_Workspace_Rows": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(or(greater(int(coalesce(variables('DefenderJson')?['Detections'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['HighAlerts'], 0)), 0), greater(length(body('Filter_High_Workspace_Findings')), 0)), 'HIGH', if(or(greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['Alerts'], 0)), 0), greater(length(outputs('Compose_Workspace_Rows')), 0), and(equals(toLower(string(coalesce(variables('DefenderJson')?['IsSigned'], 'false'))), 'false'), greater(int(coalesce(variables('DefenderJson')?['FileHasRow'], 0)), 0), less(int(coalesce(variables('DefenderJson')?['GlobalPrevalence'], 0)), 10))), 'MEDIUM', if(and(equals(int(coalesce(variables('DefenderJson')?['FileHasRow'], 0)), 1), or(equals(toLower(string(coalesce(variables('DefenderJson')?['IsRootSignerMicrosoft'], 'false'))), 'true'), greaterOrEquals(int(coalesce(variables('DefenderJson')?['GlobalPrevalence'], 0)), 1000))), 'LOW', 'UNKNOWN')))"
+                },
+                "Compose_VerdictStyle": {
+                  "runAfter": {
+                    "Compose_Verdict": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(outputs('Compose_Verdict'), 'HIGH'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#a4262c', if(equals(outputs('Compose_Verdict'), 'MEDIUM'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#986f0b', if(equals(outputs('Compose_Verdict'), 'LOW'), 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#107c10', 'display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:#605e5c')))"
+                },
+                "Compose_VerdictReason": {
+                  "runAfter": {
+                    "Compose_VerdictStyle": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@concat('Defender: ', variables('DefenderStatus'), ' &middot; observations: ', string(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), ' &middot; workspace rows: ', string(length(outputs('Compose_Workspace_Rows'))))"
+                },
+                "Append_FileHash_block": {
+                  "runAfter": {
+                    "Compose_VerdictReason": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "AppendToStringVariable",
+                  "inputs": {
+                    "name": "HtmlBody",
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nFile hash enrichment &mdash; <code>@{outputs('Compose_Display_Hash')}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Algorithm</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{outputs('Compose_Hash_Algorithm')}</b></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hash</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Display_Hash')}</td></tr>\n</table>\n@{variables('DefenderHtml')}\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
+                  }
+                }
+              }
+            },
+            "Condition_any_FileHash_entities": {
+              "runAfter": {
+                "For_each_FileHash_entity": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "and": [
+                  {
+                    "greater": [
+                      "@length(coalesce(body('Entities_-_Get_File_Hashes')?['FileHashes'], json('[]')))",
+                      0
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Add_comment_to_incident_V3": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>@{variables('HtmlBody')}</p>"
+                    },
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              },
+              "azuremonitorlogs": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]",
+                "connectionName": "[variables('MonitorLogsConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              }
+            }
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "FileHashContextWatchlistAlias": {
+            "value": "[parameters('FileHashContextWatchlistAlias')]"
+          },
+          "WorkspaceSubscriptionId": {
+            "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "WorkspaceResourceGroup": {
+            "value": "[parameters('WorkspaceResourceGroup')]"
+          },
+          "WorkspaceName": {
+            "value": "[parameters('WorkspaceName')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityType": {
+      "type": "string",
+      "value": "UserAssigned"
+    },
+    "ManagedIdentityResourceId": {
+      "type": "string",
+      "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId]"
+    }
+  }
+}

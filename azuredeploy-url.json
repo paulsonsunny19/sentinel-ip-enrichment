@@ -2,8 +2,8 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "title": "Enrich URL entities and post a Sentinel incident comment",
-    "description": "For each URL entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment.",
+    "title": "Enrich URL and Domain entities and post a Sentinel incident comment",
+    "description": "For each URL or DNS-resolution Domain entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment per entity.",
     "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting.",
     "postDeployment": [
       "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
@@ -14,11 +14,13 @@
     ],
     "lastUpdateTime": "2026-09-01",
     "entities": [
-      "Url"
+      "Url",
+      "DNSResolution"
     ],
     "tags": [
       "Enrichment",
       "URL",
+      "Domain",
       "Microsoft Threat Intelligence",
       "Defender XDR"
     ],
@@ -348,10 +350,76 @@
                 "path": "/entities/url"
               }
             },
-            "For_each_URL_entity": {
-              "foreach": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
+            "Entities_-_Get_Domains": {
+              "runAfter": {
+                "Init_DefenderHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/dnsresolution"
+              }
+            },
+            "Select_URL_Values": {
               "runAfter": {
                 "Entities_-_Get_URLs": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Select",
+              "inputs": {
+                "from": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
+                "select": "@coalesce(item()?['Url'], item()?['url'], '')"
+              }
+            },
+            "Select_Domain_Values": {
+              "runAfter": {
+                "Entities_-_Get_Domains": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Select",
+              "inputs": {
+                "from": "@coalesce(body('Entities_-_Get_Domains')?['DNSResolutions'], body('Entities_-_Get_Domains')?['Domains'], json('[]'))",
+                "select": "@coalesce(item()?['DomainName'], item()?['domainName'], item()?['Domain'], item()?['domain'], '')"
+              }
+            },
+            "Compose_Combined_Targets": {
+              "runAfter": {
+                "Select_URL_Values": [
+                  "Succeeded"
+                ],
+                "Select_Domain_Values": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@union(body('Select_URL_Values'), body('Select_Domain_Values'))"
+            },
+            "Filter_Combined_Targets": {
+              "runAfter": {
+                "Compose_Combined_Targets": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Query",
+              "inputs": {
+                "from": "@outputs('Compose_Combined_Targets')",
+                "where": "@not(equals(trim(coalesce(item(), '')), ''))"
+              }
+            },
+            "For_each_URL_entity": {
+              "foreach": "@body('Filter_Combined_Targets')",
+              "runAfter": {
+                "Filter_Combined_Targets": [
                   "Succeeded"
                 ]
               },
@@ -437,7 +505,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@replace(replace(replace(trim(string(coalesce(items('For_each_URL_entity')?['Url'], items('For_each_URL_entity')?['url'], ''))), '[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
+                  "inputs": "@replace(replace(replace(trim(string(items('For_each_URL_entity'))), '[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
                 },
                 "Compose_Normalized_URL": {
                   "runAfter": {
@@ -466,9 +534,18 @@
                   "type": "Compose",
                   "inputs": "@toLower(uriHost(outputs('Compose_Normalized_URL')))"
                 },
-                "Condition_MDTI_enabled": {
+                "Compose_Entity_Kind": {
                   "runAfter": {
                     "Compose_URL_Host": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(or(startsWith(toLower(trim(items('For_each_URL_entity'))), 'http://'), startsWith(toLower(trim(items('For_each_URL_entity'))), 'https://'), contains(items('For_each_URL_entity'), '/')), 'URL', 'Domain')"
+                },
+                "Condition_MDTI_enabled": {
+                  "runAfter": {
+                    "Compose_Entity_Kind": [
                       "Succeeded"
                     ]
                   },
@@ -931,7 +1008,7 @@
                   "type": "AppendToStringVariable",
                   "inputs": {
                     "name": "HtmlBody",
-                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nURL enrichment &mdash; <code>@{outputs('Compose_Display_URL')}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Normalized URL</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Display_URL')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Host</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{outputs('Compose_URL_Host')}</b></td></tr>\n</table>\n@{variables('MDTIHtml')}\n@{variables('DefenderHtml')}\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\n@{outputs('Compose_Entity_Kind')} enrichment &mdash; <code>@{outputs('Compose_Display_URL')}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Entity_Kind')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Normalized URL</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Display_URL')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Host</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{outputs('Compose_URL_Host')}</b></td></tr>\n</table>\n@{variables('MDTIHtml')}\n@{variables('DefenderHtml')}\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
                   }
                 }
               }
@@ -947,7 +1024,7 @@
                 "and": [
                   {
                     "greater": [
-                      "@length(coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]')))",
+                      "@length(body('Filter_Combined_Targets'))",
                       0
                     ]
                   }
