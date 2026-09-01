@@ -20,8 +20,15 @@ A fourth, separate **file hash enrichment playbook** enriches Sentinel FileHash 
 activity, and Sentinel threat intelligence and workspace sightings. See
 [`README-FILEHASH.md`](README-FILEHASH.md) and deploy `azuredeploy-filehash.json`.
 
-All four playbooks — IP, device, URL, and file hash — are independent and can all be attached to the
-same incident automation rule.
+A fifth, separate **reported email enrichment playbook** enriches Sentinel Mail message entities
+(e.g. user-reported phishing) with the full Defender XDR email record — delivery, threat
+classification, authentication results, attachments, contained URLs, Safe Links click-through,
+post-delivery remediation — plus MDTI sender-domain reputation and Sentinel threat
+intelligence/workspace sightings. See [`README-EMAIL.md`](README-EMAIL.md) and deploy
+`azuredeploy-email.json`.
+
+All five playbooks — IP, device, URL, file hash, and email — are independent and can all be attached
+to the same incident automation rule.
 
 ## Sources and what they cost
 
@@ -84,6 +91,11 @@ azuredeploy-filehash.json                  separate file hash enrichment ARM tem
 build_filehash_template.py                 generator for the file hash template
 kql/Defender-XDR-FileHash-Enrichment.kql   standalone Defender file hash validation query
 README-FILEHASH.md                         file hash sources, verdict logic, permissions and deployment
+
+azuredeploy-email.json                     separate reported-email enrichment ARM template
+build_email_template.py                    generator for the email template
+kql/Defender-XDR-Email-Enrichment.kql      standalone Defender email validation query
+README-EMAIL.md                            email sources, verdict logic, permissions and deployment
 ```
 
 ## Deploy (about 10 minutes)
