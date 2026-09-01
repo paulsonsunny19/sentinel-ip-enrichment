@@ -149,6 +149,15 @@ for script, output_json, deployment_name, prefix in PLAYBOOKS:
             "name": deployment_name,
             "properties": {
                 "mode": "Incremental",
+                # Nested/inline templates default to scope "outer" -- without this,
+                # every expression INSIDE the embedded template (parameters('PlaybookName'),
+                # variables('SentinelConnectionName'), ...) resolves against the master
+                # template's own parameters/variables instead of its own, breaking as
+                # soon as a name differs between the two (which PlaybookName always does,
+                # deliberately, since each Logic App needs a distinct one). "inner" gives
+                # each nested template its own fully isolated parameter/variable scope,
+                # fed only by the values in "parameters" below.
+                "expressionEvaluationOptions": {"scope": "inner"},
                 "template": nested_template,
                 "parameters": nested_params,
             },

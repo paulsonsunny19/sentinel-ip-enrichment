@@ -297,6 +297,9 @@
       "name": "deploy-ip-enrichment",
       "properties": {
         "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
@@ -1739,6 +1742,9 @@
       "name": "deploy-device-enrichment",
       "properties": {
         "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
@@ -2463,6 +2469,9 @@
       "name": "deploy-url-enrichment",
       "properties": {
         "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
@@ -4430,6 +4439,9 @@
       "name": "deploy-filehash-enrichment",
       "properties": {
         "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
@@ -5149,6 +5161,9 @@
       "name": "deploy-email-enrichment",
       "properties": {
         "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
@@ -6209,6 +6224,9 @@
       "name": "deploy-account-enrichment",
       "properties": {
         "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
         "template": {
           "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
           "contentVersion": "1.0.0.0",
