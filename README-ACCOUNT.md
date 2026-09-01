@@ -26,6 +26,12 @@ from the same incident automation rule.
 | **Sentinel workspace** | TI matches against the UPN, prior alerts, optional client watchlist context |
 | **Triage** | A HIGH / MEDIUM / LOW / UNKNOWN verdict and a concise source-status summary |
 
+**Comment format.** Each source above renders as one compact table row (two for the busiest —
+profile and sign-ins), not a sub-table of its own. A source that's disabled, unpermissioned, or
+came back empty collapses to a single line with its status (e.g. "unavailable (HTTP 403)") instead
+of a full grid of blank/n-a fields — so a partially-permissioned deployment still reads as a short,
+scannable comment rather than a long one with mostly-empty tables.
+
 ## Files
 
 | File | Purpose |

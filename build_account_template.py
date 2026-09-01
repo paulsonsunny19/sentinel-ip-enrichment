@@ -159,85 +159,105 @@ HEADER = (
 )
 
 
-PROFILE_BLOCK = f"""<div style="{H4}"><b>User profile</b> <span style="font-weight:400;color:#605e5c">(Microsoft Graph)</span></div>
-<table style="{TBL}">
-<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('ProfileStatus')}}</td></tr>
-<tr><th style="{TH}">Name</th><td style="{TD}">@{{string(coalesce(variables('ProfileJson')?['displayName'], 'n/a'))}}</td><th style="{TH}">Account enabled</th><td style="{TD}"><b>@{{string(coalesce(variables('ProfileJson')?['accountEnabled'], 'n/a'))}}</b></td></tr>
-<tr><th style="{TH}">UPN / mail</th><td style="{TD}">@{{string(coalesce(variables('ProfileJson')?['userPrincipalName'], 'n/a'))}} / @{{string(coalesce(variables('ProfileJson')?['mail'], 'n/a'))}}</td><th style="{TH}">Job title / dept</th><td style="{TD}">@{{string(coalesce(variables('ProfileJson')?['jobTitle'], 'n/a'))}} / @{{string(coalesce(variables('ProfileJson')?['department'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Location</th><td style="{TD}" colspan="3">office: @{{string(coalesce(variables('ProfileJson')?['officeLocation'], 'n/a'))}} &nbsp;|&nbsp; city: @{{string(coalesce(variables('ProfileJson')?['city'], 'n/a'))}} &nbsp;|&nbsp; state: @{{string(coalesce(variables('ProfileJson')?['state'], 'n/a'))}} &nbsp;|&nbsp; country: @{{string(coalesce(variables('ProfileJson')?['country'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Phone</th><td style="{TD}">@{{string(coalesce(variables('ProfileJson')?['mobilePhone'], 'n/a'))}}</td><th style="{TH}">Created / synced</th><td style="{TD}">@{{string(coalesce(variables('ProfileJson')?['createdDateTime'], 'n/a'))}} &nbsp;|&nbsp; on-prem synced: @{{string(coalesce(variables('ProfileJson')?['onPremisesSyncEnabled'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Manager</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('ManagerJson')?['displayName'], 'n/a'))}} (@{{string(coalesce(variables('ManagerJson')?['userPrincipalName'], 'n/a'))}})</td></tr>
-<tr><th style="{TH}">AAD roles</th><td style="{TD}" colspan="3">@{{variables('RolesStatus')}} &mdash; @{{string(coalesce(variables('RolesJson'), '[]'))}}</td></tr>
-</table>"""
+# Every section below renders as ONE (or two, for the busiest sections) compact table
+# row, self-collapsing to a single status-only row when that source is disabled,
+# unpermissioned, or came back empty -- rather than a full sub-table of blank/n-a
+# fields. Each is a bare "@..." expression (not "@{...}" interpolation), built with
+# concat()/if() so the same string works whether the source's Condition_X_enabled took
+# the "if" branch (real data or an HTTP failure) or the "else" branch (disabled): in
+# both cases variables('XStatus') already carries the right one-line explanation.
+PROFILE_ROW = (
+    "@if(equals(variables('ProfileStatus'), 'available'), concat("
+    "'<tr><th style=\"" + TH + "\">Profile</th><td style=\"" + TD + "\" colspan=\"3\">', "
+    "string(coalesce(variables('ProfileJson')?['displayName'], 'n/a')), ' &lt;', "
+    "string(coalesce(variables('ProfileJson')?['userPrincipalName'], 'n/a')), '&gt; &nbsp;|&nbsp; enabled: <b>', "
+    "string(coalesce(variables('ProfileJson')?['accountEnabled'], 'n/a')), '</b> &nbsp;|&nbsp; ', "
+    "string(coalesce(variables('ProfileJson')?['jobTitle'], 'n/a')), ', ', "
+    "string(coalesce(variables('ProfileJson')?['department'], 'n/a')), ' &nbsp;|&nbsp; ', "
+    "string(coalesce(variables('ProfileJson')?['officeLocation'], 'n/a')), ', ', "
+    "string(coalesce(variables('ProfileJson')?['city'], 'n/a')), ', ', "
+    "string(coalesce(variables('ProfileJson')?['country'], 'n/a')), ' &nbsp;|&nbsp; ph: ', "
+    "string(coalesce(variables('ProfileJson')?['mobilePhone'], 'n/a')), '</td></tr>', "
+    "'<tr><th style=\"" + TH + "\">Manager / AAD roles</th><td style=\"" + TD + "\" colspan=\"3\">', "
+    "string(coalesce(variables('ManagerJson')?['displayName'], 'n/a')), ' (', "
+    "string(coalesce(variables('ManagerJson')?['userPrincipalName'], 'n/a')), ') &nbsp;|&nbsp; roles: ', "
+    "if(equals(variables('RolesStatus'), 'available'), string(variables('RolesJson')), variables('RolesStatus')), "
+    "'</td></tr>'), "
+    "concat('<tr><th style=\"" + TH + "\">Profile</th><td style=\"" + TD + "\" colspan=\"3\">', variables('ProfileStatus'), '</td></tr>'))"
+)
 
 
-PROFILE_DISABLED_BLOCK = f"""<div style="{H4}"><b>User profile</b></div>
-<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
+MFA_ROW = (
+    "@if(equals(variables('MfaStatus'), 'available'), concat("
+    "'<tr><th style=\"" + TH + "\">MFA / SSPR</th><td style=\"" + TD + "\" colspan=\"3\">registered: <b>', "
+    "string(coalesce(variables('MfaJson')?['isMfaRegistered'], 'n/a')), '</b> &nbsp;|&nbsp; capable: ', "
+    "string(coalesce(variables('MfaJson')?['isMfaCapable'], 'n/a')), ' &nbsp;|&nbsp; SSPR: ', "
+    "string(coalesce(variables('MfaJson')?['isSsprRegistered'], 'n/a')), '/', "
+    "string(coalesce(variables('MfaJson')?['isSsprCapable'], 'n/a')), ' &nbsp;|&nbsp; passwordless: ', "
+    "string(coalesce(variables('MfaJson')?['isPasswordlessCapable'], 'n/a')), ' &nbsp;|&nbsp; default: ', "
+    "string(coalesce(variables('MfaJson')?['defaultMfaMethod'], 'n/a')), ' &nbsp;|&nbsp; admin: ', "
+    "string(coalesce(variables('MfaJson')?['isAdmin'], 'n/a')), ' &nbsp;|&nbsp; methods: ', "
+    "string(coalesce(variables('MfaJson')?['methodsRegistered'], '[]')), '</td></tr>'), "
+    "concat('<tr><th style=\"" + TH + "\">MFA / SSPR</th><td style=\"" + TD + "\" colspan=\"3\">', variables('MfaStatus'), '</td></tr>'))"
+)
 
 
-DEVICES_BLOCK = f"""<div style="{H4}"><b>Registered devices</b> <span style="font-weight:400;color:#605e5c">(Microsoft Graph)</span></div>
-<table style="{TBL}">
-<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('DevicesStatus')}}</td></tr>
-<tr><th style="{TH}">Name</th><th style="{TH}">OS</th><th style="{TH}">Trust / compliant / managed</th><th style="{TH}">Last sign-in</th></tr>
-@{{if(empty(variables('DevicesJson')), concat('<tr><td style="{TD}" colspan="4">No registered devices, or lookup unavailable.</td></tr>'), join(body('Select_Device_Rows'), ''))}}
-</table>"""
+RISK_ROW = (
+    "@if(startsWith(variables('RiskStatus'), 'available'), concat("
+    "'<tr><th style=\"" + TH + "\">Identity risk</th><td style=\"" + TD + "\" colspan=\"3\">level: <b>', "
+    "string(coalesce(variables('RiskJson')?['riskLevel'], 'n/a')), '</b> &nbsp;|&nbsp; state: <b>', "
+    "string(coalesce(variables('RiskJson')?['riskState'], 'n/a')), '</b> &nbsp;|&nbsp; detail: ', "
+    "string(coalesce(variables('RiskJson')?['riskDetail'], 'n/a')), ' &nbsp;|&nbsp; events: ', "
+    "string(length(variables('RiskDetectionsJson'))), "
+    "if(greater(length(variables('RiskDetectionsJson')), 0), "
+    "concat(' &nbsp;|&nbsp; recent: ', string(variables('RiskDetectionsJson'))), ''), "
+    "'</td></tr>'), "
+    "concat('<tr><th style=\"" + TH + "\">Identity risk</th><td style=\"" + TD + "\" colspan=\"3\">', variables('RiskStatus'), '</td></tr>'))"
+)
 
 
-DEVICES_DISABLED_BLOCK = f"""<div style="{H4}"><b>Registered devices</b></div>
-<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
+OOO_ROW = (
+    "@if(equals(variables('OOOStatus'), 'available'), concat("
+    "'<tr><th style=\"" + TH + "\">Out-of-office</th><td style=\"" + TD + "\" colspan=\"3\">', "
+    "string(coalesce(variables('OOOJson')?['status'], 'n/a')), "
+    "if(equals(string(coalesce(variables('OOOJson')?['status'], '')), 'scheduled'), "
+    "concat(' (', string(coalesce(variables('OOOJson')?['scheduledStartDateTime'], 'n/a')), ' to ', "
+    "string(coalesce(variables('OOOJson')?['scheduledEndDateTime'], 'n/a')), ')'), ''), "
+    "'</td></tr>'), "
+    "concat('<tr><th style=\"" + TH + "\">Out-of-office</th><td style=\"" + TD + "\" colspan=\"3\">', variables('OOOStatus'), '</td></tr>'))"
+)
 
 
-MFA_BLOCK = f"""<div style="{H4}"><b>MFA / authentication registration</b> <span style="font-weight:400;color:#605e5c">(Microsoft Graph)</span></div>
-<table style="{TBL}">
-<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('MfaStatus')}}</td></tr>
-<tr><th style="{TH}">MFA registered</th><td style="{TD}"><b>@{{string(coalesce(variables('MfaJson')?['isMfaRegistered'], 'n/a'))}}</b></td><th style="{TH}">MFA capable</th><td style="{TD}">@{{string(coalesce(variables('MfaJson')?['isMfaCapable'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">SSPR registered / capable</th><td style="{TD}">@{{string(coalesce(variables('MfaJson')?['isSsprRegistered'], 'n/a'))}} / @{{string(coalesce(variables('MfaJson')?['isSsprCapable'], 'n/a'))}}</td><th style="{TH}">Passwordless capable</th><td style="{TD}">@{{string(coalesce(variables('MfaJson')?['isPasswordlessCapable'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Default method</th><td style="{TD}">@{{string(coalesce(variables('MfaJson')?['defaultMfaMethod'], 'n/a'))}}</td><th style="{TH}">Is admin</th><td style="{TD}">@{{string(coalesce(variables('MfaJson')?['isAdmin'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Methods registered</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('MfaJson')?['methodsRegistered'], '[]'))}}</td></tr>
-</table>"""
+DEVICES_ROW = (
+    "@if(startsWith(variables('DevicesStatus'), 'available'), concat("
+    "'<tr><th style=\"" + TH + "\">Registered devices</th><td style=\"" + TD + "\" colspan=\"3\">', "
+    "variables('DevicesStatus'), "
+    "if(greater(length(variables('DevicesJson')), 0), "
+    "concat(' &nbsp;|&nbsp; ', join(body('Select_Device_Rows'), ', ')), ''), "
+    "'</td></tr>'), "
+    "concat('<tr><th style=\"" + TH + "\">Registered devices</th><td style=\"" + TD + "\" colspan=\"3\">', variables('DevicesStatus'), '</td></tr>'))"
+)
 
 
-MFA_DISABLED_BLOCK = f"""<div style="{H4}"><b>MFA / authentication registration</b></div>
-<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
-
-
-RISK_BLOCK = f"""<div style="{H4}"><b>Entra ID Protection &mdash; identity risk</b> <span style="font-weight:400;color:#605e5c">(Microsoft Graph)</span></div>
-<table style="{TBL}">
-<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('RiskStatus')}}</td></tr>
-<tr><th style="{TH}">Risk level</th><td style="{TD}"><b>@{{string(coalesce(variables('RiskJson')?['riskLevel'], 'n/a'))}}</b></td><th style="{TH}">Risk state</th><td style="{TD}"><b>@{{string(coalesce(variables('RiskJson')?['riskState'], 'n/a'))}}</b></td></tr>
-<tr><th style="{TH}">Risk detail</th><td style="{TD}">@{{string(coalesce(variables('RiskJson')?['riskDetail'], 'n/a'))}}</td><th style="{TH}">Last updated</th><td style="{TD}">@{{string(coalesce(variables('RiskJson')?['riskLastUpdatedDateTime'], 'n/a'))}}</td></tr>
-<tr><th style="{TH}">Risk events</th><td style="{TD}"><b>@{{string(length(variables('RiskDetectionsJson')))}}</b></td><th style="{TH}"></th><td style="{TD}"></td></tr>
-<tr><th style="{TH}">Recent risk detections</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('RiskDetectionsJson'), '[]'))}}</td></tr>
-</table>"""
-
-
-RISK_DISABLED_BLOCK = f"""<div style="{H4}"><b>Entra ID Protection &mdash; identity risk</b></div>
-<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
-
-
-OOO_BLOCK = f"""<div style="{H4}"><b>Out-of-office status</b> <span style="font-weight:400;color:#605e5c">(Microsoft Graph)</span></div>
-<table style="{TBL}">
-<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('OOOStatus')}}</td></tr>
-<tr><th style="{TH}">Automatic replies</th><td style="{TD}"><b>@{{string(coalesce(variables('OOOJson')?['status'], 'n/a'))}}</b></td><th style="{TH}">Window</th><td style="{TD}">@{{string(coalesce(variables('OOOJson')?['scheduledStartDateTime'], 'n/a'))}} &nbsp;to&nbsp; @{{string(coalesce(variables('OOOJson')?['scheduledEndDateTime'], 'n/a'))}}</td></tr>
-</table>"""
-
-
-OOO_DISABLED_BLOCK = f"""<div style="{H4}"><b>Out-of-office status</b></div>
-<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
-
-
-SIGNIN_BLOCK = f"""<div style="{H4}"><b>Sign-in activity &mdash; last @{{parameters('LookbackDays')}} days</b> <span style="font-weight:400;color:#605e5c">(Sentinel workspace)</span></div>
-<table style="{TBL}">
-<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('SigninStatus')}}</td></tr>
-<tr><th style="{TH}">Sign-ins</th><td style="{TD}"><b>@{{string(coalesce(variables('SigninJson')?['TotalSignins'], 0))}}</b> total, <b>@{{string(coalesce(variables('SigninJson')?['FailedSignins'], 0))}} failed</b></td><th style="{TH}">Risky sign-ins</th><td style="{TD}"><b>@{{string(coalesce(variables('SigninJson')?['RiskySignins'], 0))}}</b> risky, <b>@{{string(coalesce(variables('SigninJson')?['HighRiskSignins'], 0))}} high</b>, CA failures: @{{string(coalesce(variables('SigninJson')?['CAFailures'], 0))}}</td></tr>
-<tr><th style="{TH}">Failed MFA</th><td style="{TD}"><b>@{{string(coalesce(variables('SigninJson')?['FailedMFA'], 0))}}</b></td><th style="{TH}">MFA fraud reported</th><td style="{TD}"><b>@{{string(coalesce(variables('SigninJson')?['MFAFraud'], 0))}}</b></td></tr>
-<tr><th style="{TH}">Countries / cities seen</th><td style="{TD}">@{{string(coalesce(variables('SigninJson')?['Countries'], '[]'))}} / @{{string(coalesce(variables('SigninJson')?['Cities'], '[]'))}}</td><th style="{TH}">IPs / apps / devices</th><td style="{TD}">@{{string(coalesce(variables('SigninJson')?['IPs'], '[]'))}} &nbsp;|&nbsp; @{{string(coalesce(variables('SigninJson')?['Apps'], '[]'))}} &nbsp;|&nbsp; @{{string(coalesce(variables('SigninJson')?['Devices'], '[]'))}}</td></tr>
-<tr><th style="{TH}">Most recent sign-in</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('SigninJson')?['LastSigninTime'], 'n/a'))}} &nbsp;|&nbsp; result: @{{string(coalesce(variables('SigninJson')?['LastResult'], 'n/a'))}} &nbsp;|&nbsp; risk: @{{string(coalesce(variables('SigninJson')?['LastRiskLevel'], 'n/a'))}}/@{{string(coalesce(variables('SigninJson')?['LastRiskState'], 'n/a'))}} &nbsp;|&nbsp; @{{string(coalesce(variables('SigninJson')?['LastCity'], 'n/a'))}}, @{{string(coalesce(variables('SigninJson')?['LastCountry'], 'n/a'))}} &nbsp;|&nbsp; IP @{{string(coalesce(variables('SigninJson')?['LastIP'], 'n/a'))}} &nbsp;|&nbsp; @{{string(coalesce(variables('SigninJson')?['LastApp'], 'n/a'))}} on @{{string(coalesce(variables('SigninJson')?['LastDevice'], 'n/a'))}}</td></tr>
-</table>"""
-
-
-SIGNIN_DISABLED_BLOCK = f"""<div style="{H4}"><b>Sign-in activity</b></div>
-<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
+SIGNIN_ROW = (
+    "@if(startsWith(variables('SigninStatus'), 'available'), concat("
+    "'<tr><th style=\"" + TH + "\">Sign-ins</th><td style=\"" + TD + "\" colspan=\"3\">', "
+    "string(coalesce(variables('SigninJson')?['TotalSignins'], 0)), ' total, ', "
+    "string(coalesce(variables('SigninJson')?['FailedSignins'], 0)), ' failed &nbsp;|&nbsp; risky: ', "
+    "string(coalesce(variables('SigninJson')?['RiskySignins'], 0)), ' (', "
+    "string(coalesce(variables('SigninJson')?['HighRiskSignins'], 0)), ' high) &nbsp;|&nbsp; CA fail: ', "
+    "string(coalesce(variables('SigninJson')?['CAFailures'], 0)), ' &nbsp;|&nbsp; failed MFA: ', "
+    "string(coalesce(variables('SigninJson')?['FailedMFA'], 0)), ' &nbsp;|&nbsp; <b>MFA fraud: ', "
+    "string(coalesce(variables('SigninJson')?['MFAFraud'], 0)), '</b></td></tr>', "
+    "'<tr><th style=\"" + TH + "\">Sign-in context</th><td style=\"" + TD + "\" colspan=\"3\">countries: ', "
+    "string(coalesce(variables('SigninJson')?['Countries'], '[]')), ' &nbsp;|&nbsp; apps: ', "
+    "string(coalesce(variables('SigninJson')?['Apps'], '[]')), ' &nbsp;|&nbsp; last: ', "
+    "string(coalesce(variables('SigninJson')?['LastSigninTime'], 'n/a')), ' from ', "
+    "string(coalesce(variables('SigninJson')?['LastCity'], 'n/a')), ', ', "
+    "string(coalesce(variables('SigninJson')?['LastCountry'], 'n/a')), ' (', "
+    "string(coalesce(variables('SigninJson')?['LastIP'], 'n/a')), ')</td></tr>'), "
+    "concat('<tr><th style=\"" + TH + "\">Sign-ins</th><td style=\"" + TD + "\" colspan=\"3\">', variables('SigninStatus'), '</td></tr>'))"
+)
 
 
 VERDICT_STYLE = (
@@ -291,12 +311,14 @@ Account enrichment &mdash; <code>@{{outputs('Compose_UPN')}}</code>
 <span style="@{{outputs('Compose_VerdictStyle')}}">@{{outputs('Compose_Verdict')}}</span>
 </div>
 <div style="font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px">@{{outputs('Compose_VerdictReason')}}</div>
+<table style="{TBL}">
 @{{variables('ProfileHtml')}}
-@{{variables('RiskHtml')}}
 @{{variables('MfaHtml')}}
-@{{variables('DevicesHtml')}}
+@{{variables('RiskHtml')}}
 @{{variables('OOOHtml')}}
+@{{variables('DevicesHtml')}}
 @{{variables('SigninHtml')}}
+</table>
 <div style="{H4}"><b>Sentinel workspace insights &mdash; last @{{parameters('LookbackDays')}} days</b></div>
 <table style="{TBL}">
 <tr><th style="{TH}">Source</th><th style="{TH}">Detail</th><th style="{TH}">Last seen (UTC)</th></tr>
@@ -727,14 +749,14 @@ definition = {
                         },
                         "Set_ProfileHtml": {
                             "runAfter": after("Set_ProfileStatus", "Set_ManagerJson", "Set_RolesStatus"), "type": "SetVariable",
-                            "inputs": {"name": "ProfileHtml", "value": PROFILE_BLOCK},
+                            "inputs": {"name": "ProfileHtml", "value": PROFILE_ROW},
                         },
                     },
                     "else": {
                         "actions": {
                             "Set_ProfileHtml_disabled": {
                                 "runAfter": {}, "type": "SetVariable",
-                                "inputs": {"name": "ProfileHtml", "value": PROFILE_DISABLED_BLOCK},
+                                "inputs": {"name": "ProfileHtml", "value": PROFILE_ROW},
                             }
                         }
                     },
@@ -766,10 +788,11 @@ definition = {
                             "inputs": {
                                 "from": "@variables('DevicesJson')",
                                 "select": (
-                                    f'<tr><td style="{TD}"><b>@{{item()?[\'displayName\']}}</b></td>'
-                                    f'<td style="{TD}">@{{item()?[\'operatingSystem\']}} @{{item()?[\'operatingSystemVersion\']}}</td>'
-                                    f'<td style="{TD}">@{{item()?[\'trustType\']}} / @{{item()?[\'isCompliant\']}} / @{{item()?[\'isManaged\']}}</td>'
-                                    f'<td style="{TD}">@{{item()?[\'approximateLastSignInDateTime\']}}</td></tr>'
+                                    "@concat(coalesce(item()?['displayName'], 'unknown'), ' (', "
+                                    "coalesce(item()?['operatingSystem'], '?'), '; ', "
+                                    "coalesce(item()?['trustType'], '?'), '; ', "
+                                    "if(equals(item()?['isCompliant'], true), 'compliant', 'noncompliant'), "
+                                    "if(equals(item()?['isManaged'], true), ', managed)', ')'))"
                                 ),
                             },
                         },
@@ -786,14 +809,14 @@ definition = {
                         },
                         "Set_DevicesHtml": {
                             "runAfter": after("Set_DevicesStatus"), "type": "SetVariable",
-                            "inputs": {"name": "DevicesHtml", "value": DEVICES_BLOCK},
+                            "inputs": {"name": "DevicesHtml", "value": DEVICES_ROW},
                         },
                     },
                     "else": {
                         "actions": {
                             "Set_DevicesHtml_disabled": {
                                 "runAfter": {}, "type": "SetVariable",
-                                "inputs": {"name": "DevicesHtml", "value": DEVICES_DISABLED_BLOCK},
+                                "inputs": {"name": "DevicesHtml", "value": DEVICES_ROW},
                             }
                         }
                     },
@@ -829,14 +852,14 @@ definition = {
                         },
                         "Set_MfaHtml": {
                             "runAfter": after("Set_MfaStatus"), "type": "SetVariable",
-                            "inputs": {"name": "MfaHtml", "value": MFA_BLOCK},
+                            "inputs": {"name": "MfaHtml", "value": MFA_ROW},
                         },
                     },
                     "else": {
                         "actions": {
                             "Set_MfaHtml_disabled": {
                                 "runAfter": {}, "type": "SetVariable",
-                                "inputs": {"name": "MfaHtml", "value": MFA_DISABLED_BLOCK},
+                                "inputs": {"name": "MfaHtml", "value": MFA_ROW},
                             }
                         }
                     },
@@ -901,14 +924,14 @@ definition = {
                         },
                         "Set_RiskHtml": {
                             "runAfter": after("Set_RiskStatus"), "type": "SetVariable",
-                            "inputs": {"name": "RiskHtml", "value": RISK_BLOCK},
+                            "inputs": {"name": "RiskHtml", "value": RISK_ROW},
                         },
                     },
                     "else": {
                         "actions": {
                             "Set_RiskHtml_disabled": {
                                 "runAfter": {}, "type": "SetVariable",
-                                "inputs": {"name": "RiskHtml", "value": RISK_DISABLED_BLOCK},
+                                "inputs": {"name": "RiskHtml", "value": RISK_ROW},
                             }
                         }
                     },
@@ -945,14 +968,14 @@ definition = {
                         },
                         "Set_OOOHtml": {
                             "runAfter": after("Set_OOOStatus"), "type": "SetVariable",
-                            "inputs": {"name": "OOOHtml", "value": OOO_BLOCK},
+                            "inputs": {"name": "OOOHtml", "value": OOO_ROW},
                         },
                     },
                     "else": {
                         "actions": {
                             "Set_OOOHtml_disabled": {
                                 "runAfter": {}, "type": "SetVariable",
-                                "inputs": {"name": "OOOHtml", "value": OOO_DISABLED_BLOCK},
+                                "inputs": {"name": "OOOHtml", "value": OOO_ROW},
                             }
                         }
                     },
@@ -1005,14 +1028,14 @@ definition = {
                         },
                         "Set_SigninHtml": {
                             "runAfter": after("Set_SigninStatus"), "type": "SetVariable",
-                            "inputs": {"name": "SigninHtml", "value": SIGNIN_BLOCK},
+                            "inputs": {"name": "SigninHtml", "value": SIGNIN_ROW},
                         },
                     },
                     "else": {
                         "actions": {
                             "Set_SigninHtml_disabled": {
                                 "runAfter": {}, "type": "SetVariable",
-                                "inputs": {"name": "SigninHtml", "value": SIGNIN_DISABLED_BLOCK},
+                                "inputs": {"name": "SigninHtml", "value": SIGNIN_ROW},
                             }
                         }
                     },
