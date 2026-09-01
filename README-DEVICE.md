@@ -50,16 +50,9 @@ kql/Defender-XDR-Device-Enrichment.kql     standalone Advanced Hunting validatio
 
 ## Deploy
 
-```bash
-az deployment group create \
-  --name sentinel-device-enrichment \
-  --resource-group <resource-group> \
-  --template-file azuredeploy-device.json \
-  --parameters WorkspaceName=<sentinel-workspace>
-```
-
-`ManagedIdentityType` defaults to `SystemAssigned`. To attach a pre-created, client-owned
-user-assigned managed identity instead:
+The device playbook is user-assigned-managed-identity-only. Create the identity first (or select an
+existing client-owned identity), then pass its full resource ID. The template does not enable a
+system-assigned identity.
 
 ```bash
 UAMI_ID=$(az identity show \
@@ -72,13 +65,13 @@ az deployment group create \
   --resource-group <resource-group> \
   --template-file azuredeploy-device.json \
   --parameters WorkspaceName=<sentinel-workspace> \
-               ManagedIdentityType=UserAssigned \
                UserAssignedManagedIdentityResourceId="$UAMI_ID"
 ```
 
 The UAMI must already exist in the client's tenant and subscription. The deployment principal needs
 permission to write the Logic App and `Managed Identity Operator` over the selected identity. The
-workflow then uses that same UAMI for Sentinel, Azure Monitor Logs and Microsoft Graph.
+UAMI is attached to the Logic App and explicitly used by the Microsoft Sentinel connector, Azure
+Monitor Logs connector and Microsoft Graph Defender Advanced Hunting call.
 
 `EnableDefenderAdvancedHunting` defaults to `true`. The activity lookback defaults to 14 days and
 can be set from 1 to 30 days. The Graph request uses a 30-day timespan so a recently inactive device
@@ -88,8 +81,7 @@ can still be resolved through `DeviceInfo`; activity summaries still honor `Defe
 
 ### 1. Azure RBAC for the Logic App managed identity
 
-The deployment output `ManagedIdentityPrincipalId` is the selected identity's object ID for either
-identity type.
+The deployment output `ManagedIdentityPrincipalId` is the UAMI service principal's object ID.
 
 ```bash
 PLAYBOOK_ID=$(az deployment group show \
@@ -166,8 +158,7 @@ on the playbook resource group to the Sentinel service identity when the portal 
 | Parameter | Default | Notes |
 |---|---|---|
 | `PlaybookName` | `Enrich-Device-IncidentComment` | Logic App name |
-| `ManagedIdentityType` | `SystemAssigned` | choose `SystemAssigned` or `UserAssigned` at deployment |
-| `UserAssignedManagedIdentityResourceId` | blank | required when `ManagedIdentityType=UserAssigned`; full resource ID of one existing client-owned UAMI |
+| `UserAssignedManagedIdentityResourceId` | required | full resource ID of one existing client-owned UAMI; the template never enables a system-assigned identity |
 | `WorkspaceName` | required | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current deployment scope | change for a cross-scope workspace |
 | `LookbackDays` | `14` | workspace lookback, 1–90 days |
