@@ -1,0 +1,37 @@
+// Entra users observed signing in from one IP address.
+// Run in the Sentinel Logs blade. The playbook substitutes ip and look.
+// Returns up to 100 distinct users across interactive and non-interactive user sign-ins.
+
+let ip = '8.8.8.8';
+let look = 14d;
+let SignIns = union isfuzzy=true
+(SigninLogs
+ | where TimeGenerated > ago(look) and IPAddress == ip
+ | extend SignInClass = 'Interactive',
+          DisplayName = coalesce(tostring(column_ifexists('UserDisplayName', '')),
+                                 tostring(Identity), tostring(UserPrincipalName))
+ | project TimeGenerated, UserPrincipalName=tostring(UserPrincipalName), DisplayName,
+           AppDisplayName=tostring(AppDisplayName), ResultType=tostring(ResultType), SignInClass),
+(AADNonInteractiveUserSignInLogs
+ | where TimeGenerated > ago(look) and IPAddress == ip
+ | extend SignInClass = 'Non-interactive',
+          DisplayName = coalesce(tostring(column_ifexists('UserDisplayName', '')),
+                                 tostring(Identity), tostring(UserPrincipalName))
+ | project TimeGenerated, UserPrincipalName=tostring(UserPrincipalName), DisplayName,
+           AppDisplayName=tostring(AppDisplayName), ResultType=tostring(ResultType), SignInClass);
+SignIns
+| where isnotempty(UserPrincipalName)
+| summarize InteractiveSignIns=countif(SignInClass == 'Interactive'),
+            NonInteractiveSignIns=countif(SignInClass == 'Non-interactive'),
+            FailedSignIns=countif(ResultType != '0'),
+            DisplayNames=make_set(DisplayName, 5), Applications=make_set(AppDisplayName, 12),
+            FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated) by UserPrincipalName
+| extend DisplayName=iff(array_length(DisplayNames) > 0, tostring(DisplayNames[0]), UserPrincipalName)
+| project DisplayName, UserPrincipalName,
+          TotalSignIns=InteractiveSignIns + NonInteractiveSignIns,
+          InteractiveSignIns, NonInteractiveSignIns, FailedSignIns,
+          Applications=tostring(Applications),
+          FirstSeen=format_datetime(FirstSeen, 'yyyy-MM-dd HH:mm:ss'),
+          LastSeen=format_datetime(LastSeen, 'yyyy-MM-dd HH:mm:ss')
+| order by LastSeen desc
+| take 100
