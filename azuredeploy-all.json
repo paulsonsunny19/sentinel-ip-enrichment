@@ -3,12 +3,12 @@
   "contentVersion": "1.0.0.0",
   "metadata": {
     "title": "Deploy all six Sentinel enrichment playbooks in one deployment",
-    "description": "Deploys the IP, device, URL, file hash, reported-email, and account (user) enrichment playbooks together as nested deployments, all bound to the same client-owned user-assigned managed identity and the same Sentinel workspace. Each playbook keeps its own dedicated Microsoft Sentinel and Azure Monitor Logs connections and its own full set of toggle parameters at their normal defaults; only the shared identity/workspace parameters (and the URL playbook's two optional third-party API keys) are threaded through from this template. Deploy this once instead of the six azuredeploy-*.json files separately; each individual template still deploys and updates independently afterward if you want to change just one playbook.",
+    "description": "Deploys the IP, device, URL, file hash, reported-email, and account (user) enrichment playbooks together as nested deployments, all bound to the same client-owned user-assigned managed identity and the same Sentinel workspace. Every parameter each playbook has is exposed here: parameters unique to one playbook keep their own name; PlaybookName is exposed per playbook (e.g. IPPlaybookName, UrlPlaybookName, ...) since each Logic App needs a distinct name; a handful of same-name, same-meaning parameters (LookbackDays, DefenderLookbackDays, EnableDefenderAdvancedHunting, EnableMicrosoftThreatIntelligence, VirusTotalApiKey) are deliberately merged into one shared master parameter applied to every playbook that has it -- see EnableDefenderAdvancedHunting's own description for the one behavior change this causes (it turns Defender Advanced Hunting on by default for the IP playbook too, which defaults it off when deployed standalone). Each playbook keeps its own dedicated Microsoft Sentinel and Azure Monitor Logs connections. Deploy this once instead of the six azuredeploy-*.json files separately; each individual template still deploys and updates independently afterward if you want to change just one playbook.",
     "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity, already granted every RBAC role and Microsoft Graph application permission listed across README.md, README-DEVICE.md, README-URL.md, README-FILEHASH.md, README-EMAIL.md, and README-ACCOUNT.md. A permission a given playbook lacks doesn't block the others -- each source inside each playbook fails open independently.",
     "postDeployment": [
       "Confirm all twelve API connections (two per playbook) show the selected managed identity.",
       "Attach whichever of the six playbooks you want to a Sentinel incident automation rule.",
-      "To change one playbook's own parameters (lookback windows, per-source toggles, watchlist alias names, ...), redeploy that playbook's own azuredeploy-*.json with the parameters you want -- it targets the same resource names and updates in place."
+      "Review EnableDefenderAdvancedHunting's default (true here, false for the IP playbook standalone) and set it explicitly if you don't want that change."
     ],
     "lastUpdateTime": "2026-09-01",
     "entities": [
@@ -61,18 +61,232 @@
         "description": "Subscription of the Sentinel workspace."
       }
     },
+    "IPPlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-IP-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "LookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 90,
+      "metadata": {
+        "description": "Shared by every playbook that has it. How far back to query Sentinel workspace tables."
+      }
+    },
+    "TorExitListUrl": {
+      "type": "string",
+      "defaultValue": "https://check.torproject.org/torbulkexitlist",
+      "metadata": {
+        "description": "Public Tor exit-node list, fetched once per run. Point at an internal mirror if outbound access is restricted, or blank-check it by leaving the run to fail open (the check simply reports 'No')."
+      }
+    },
+    "AbuseIPDBApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Free AbuseIPDB key (1,000 checks/day). Leave blank to skip the AbuseIPDB row."
+      }
+    },
     "VirusTotalApiKey": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional, used only by the URL playbook. Leave blank to skip. The free public API forbids business-workflow use, so supply a Premium key."
+        "description": "Shared by the IP and URL playbooks (same VirusTotal account, different endpoints). Leave blank to skip. The free public API forbids business-workflow use, so supply a Premium key."
+      }
+    },
+    "GreyNoiseApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional GreyNoise Community API key. Leave blank to disable and avoid unauthenticated rate limits."
+      }
+    },
+    "EnableShodanInternetDB": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable only when the client has Shodan Enterprise permission for commercial InternetDB use. Disabled by default."
+      }
+    },
+    "EnableDefenderAdvancedHunting": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Shared by every playbook that has it (IP, Device, URL, FileHash, Email). Query Defender XDR Advanced Hunting through Microsoft Graph; requires ThreatHunting.Read.All. Defaults to true here -- note this turns it ON for the IP playbook too, which defaults it OFF when deployed standalone as azuredeploy.json. Set to false at deploy time to keep IP's original off-by-default behavior (that also turns it off for the other four)."
+      }
+    },
+    "DefenderLookbackDays": {
+      "type": "int",
+      "defaultValue": 14,
+      "minValue": 1,
+      "maxValue": 30,
+      "metadata": {
+        "description": "Shared by every playbook that has it (IP, Device, URL, FileHash, Email). Defender XDR Advanced Hunting lookback; raw hunting data is limited to a maximum of 30 days."
+      }
+    },
+    "IPContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "IPContext",
+      "metadata": {
+        "description": "Optional Sentinel watchlist alias. Use SearchKey for the IP and recommended columns Classification, Owner, Description, RiskOverride and ValidUntil. Set blank to disable."
+      }
+    },
+    "DevicePlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-Device-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "DeviceContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "DeviceContext",
+      "metadata": {
+        "description": "Optional client device watchlist alias. Set blank to disable."
+      }
+    },
+    "UrlPlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-URL-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "EnableMicrosoftThreatIntelligence": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Shared by the URL and Email playbooks. Query Microsoft Threat Intelligence (MDTI) host/domain reputation through Microsoft Graph; requires ThreatIntelligence.Read.All."
+      }
+    },
+    "URLContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "URLContext",
+      "metadata": {
+        "description": "Optional client URL/domain watchlist alias. Set blank to disable."
       }
     },
     "GoogleSafeBrowsingApiKey": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional, used only by the URL playbook. Leave blank to skip. Free Google Cloud API key."
+        "description": "Optional Google Safe Browsing v4 API key (free, from Google Cloud Console). Leave blank to skip."
+      }
+    },
+    "EnableUrlscanSearch": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Search urlscan.io for prior public scans of the URL's host. Free, no key required; a key only raises the rate limit."
+      }
+    },
+    "UrlscanApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional urlscan.io API key to raise the search rate limit. Leave blank to use the unauthenticated limit."
+      }
+    },
+    "EnablePhishTank": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Check the URL against PhishTank's phishing verification database."
+      }
+    },
+    "PhishTankAppKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional PhishTank application key to raise the rate limit. Leave blank to use the unauthenticated limit."
+      }
+    },
+    "FileHashPlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-FileHash-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "FileHashContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "FileHashContext",
+      "metadata": {
+        "description": "Optional client file-hash watchlist alias. Set blank to disable."
+      }
+    },
+    "EmailPlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-Email-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "EmailContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "EmailContext",
+      "metadata": {
+        "description": "Optional client sender/domain watchlist alias. Set blank to disable."
+      }
+    },
+    "AccountPlaybookName": {
+      "type": "string",
+      "defaultValue": "Enrich-Account-IncidentComment",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "EnableUserProfile": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query the user's Entra ID profile (name, job title, office/city/state/country, manager, AAD directory roles). Requires User.Read.All and Directory.Read.All."
+      }
+    },
+    "EnableRegisteredDevices": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query the user's registered devices. Requires Device.Read.All."
+      }
+    },
+    "EnableMfaMethods": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query MFA/SSPR/passwordless registration posture. Requires Reports.Read.All."
+      }
+    },
+    "EnableIdentityProtection": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query Entra ID Protection risky-user state and recent risk detections. Requires IdentityRiskyUser.Read.All."
+      }
+    },
+    "EnableMailboxSettings": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Query the user's automatic-replies (out-of-office) status. Requires MailboxSettings.Read."
+      }
+    },
+    "EnableSigninHistory": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Summarize sign-in activity from the Sentinel workspace. Requires only Log Analytics Reader, no Graph permission."
+      }
+    },
+    "UserContextWatchlistAlias": {
+      "type": "string",
+      "defaultValue": "UserContext",
+      "metadata": {
+        "description": "Optional client user watchlist alias. Set blank to disable."
       }
     }
   },
@@ -1485,6 +1699,36 @@
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "PlaybookName": {
+            "value": "[parameters('IPPlaybookName')]"
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "TorExitListUrl": {
+            "value": "[parameters('TorExitListUrl')]"
+          },
+          "AbuseIPDBApiKey": {
+            "value": "[parameters('AbuseIPDBApiKey')]"
+          },
+          "VirusTotalApiKey": {
+            "value": "[parameters('VirusTotalApiKey')]"
+          },
+          "GreyNoiseApiKey": {
+            "value": "[parameters('GreyNoiseApiKey')]"
+          },
+          "EnableShodanInternetDB": {
+            "value": "[parameters('EnableShodanInternetDB')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "IPContextWatchlistAlias": {
+            "value": "[parameters('IPContextWatchlistAlias')]"
           }
         }
       }
@@ -2194,6 +2438,21 @@
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "PlaybookName": {
+            "value": "[parameters('DevicePlaybookName')]"
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "DeviceContextWatchlistAlias": {
+            "value": "[parameters('DeviceContextWatchlistAlias')]"
           }
         }
       }
@@ -4126,11 +4385,41 @@
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
           },
+          "PlaybookName": {
+            "value": "[parameters('UrlPlaybookName')]"
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableMicrosoftThreatIntelligence": {
+            "value": "[parameters('EnableMicrosoftThreatIntelligence')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "URLContextWatchlistAlias": {
+            "value": "[parameters('URLContextWatchlistAlias')]"
+          },
           "VirusTotalApiKey": {
             "value": "[parameters('VirusTotalApiKey')]"
           },
           "GoogleSafeBrowsingApiKey": {
             "value": "[parameters('GoogleSafeBrowsingApiKey')]"
+          },
+          "EnableUrlscanSearch": {
+            "value": "[parameters('EnableUrlscanSearch')]"
+          },
+          "UrlscanApiKey": {
+            "value": "[parameters('UrlscanApiKey')]"
+          },
+          "EnablePhishTank": {
+            "value": "[parameters('EnablePhishTank')]"
+          },
+          "PhishTankAppKey": {
+            "value": "[parameters('PhishTankAppKey')]"
           }
         }
       }
@@ -4835,6 +5124,21 @@
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "PlaybookName": {
+            "value": "[parameters('FileHashPlaybookName')]"
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "FileHashContextWatchlistAlias": {
+            "value": "[parameters('FileHashContextWatchlistAlias')]"
           }
         }
       }
@@ -5877,6 +6181,24 @@
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "PlaybookName": {
+            "value": "[parameters('EmailPlaybookName')]"
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableMicrosoftThreatIntelligence": {
+            "value": "[parameters('EnableMicrosoftThreatIntelligence')]"
+          },
+          "EnableDefenderAdvancedHunting": {
+            "value": "[parameters('EnableDefenderAdvancedHunting')]"
+          },
+          "DefenderLookbackDays": {
+            "value": "[parameters('DefenderLookbackDays')]"
+          },
+          "EmailContextWatchlistAlias": {
+            "value": "[parameters('EmailContextWatchlistAlias')]"
           }
         }
       }
@@ -8026,6 +8348,33 @@
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"
+          },
+          "PlaybookName": {
+            "value": "[parameters('AccountPlaybookName')]"
+          },
+          "LookbackDays": {
+            "value": "[parameters('LookbackDays')]"
+          },
+          "EnableUserProfile": {
+            "value": "[parameters('EnableUserProfile')]"
+          },
+          "EnableRegisteredDevices": {
+            "value": "[parameters('EnableRegisteredDevices')]"
+          },
+          "EnableMfaMethods": {
+            "value": "[parameters('EnableMfaMethods')]"
+          },
+          "EnableIdentityProtection": {
+            "value": "[parameters('EnableIdentityProtection')]"
+          },
+          "EnableMailboxSettings": {
+            "value": "[parameters('EnableMailboxSettings')]"
+          },
+          "EnableSigninHistory": {
+            "value": "[parameters('EnableSigninHistory')]"
+          },
+          "UserContextWatchlistAlias": {
+            "value": "[parameters('UserContextWatchlistAlias')]"
           }
         }
       }
