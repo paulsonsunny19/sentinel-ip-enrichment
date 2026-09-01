@@ -854,10 +854,14 @@ definition = {
                             "@{concat('https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/', "
                             "uriComponent(outputs('Compose_Effective_Object_Id')))}"
                         ),
+                        # Workflow Definition Language string literals only support single
+                        # quotes, escaped by doubling ('' -> literal '); there is no
+                        # double-quoted string form. 'userId eq ''' closes with an escaped
+                        # quote (-> "userId eq '"), and '''' alone is a lone escaped quote.
                         "HTTP_Graph_RiskDetections": graph_get(
                             "@{concat('https://graph.microsoft.com/v1.0/identityProtection/riskDetections?"
-                            "$filter=', uriComponent(concat(\"userId eq '\", outputs('Compose_Effective_Object_Id'), \"'\")), "
-                            "'&$top=10&$orderby=detectedDateTime desc')}"
+                            "$filter=', uriComponent(concat('userId eq ''', outputs('Compose_Effective_Object_Id'), "
+                            "'''')), '&$top=10&$orderby=detectedDateTime desc')}"
                         ),
                         "Set_RiskJson": {
                             "runAfter": after("HTTP_Graph_RiskyUser", states=("Succeeded", "Failed", "TimedOut")),

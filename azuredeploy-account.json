@@ -1573,7 +1573,7 @@
                       "type": "Http",
                       "inputs": {
                         "method": "GET",
-                        "uri": "@{concat('https://graph.microsoft.com/v1.0/identityProtection/riskDetections?$filter=', uriComponent(concat(\"userId eq '\", outputs('Compose_Effective_Object_Id'), \"'\")), '&$top=10&$orderby=detectedDateTime desc')}",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/identityProtection/riskDetections?$filter=', uriComponent(concat('userId eq ''', outputs('Compose_Effective_Object_Id'), '''')), '&$top=10&$orderby=detectedDateTime desc')}",
                         "headers": {
                           "Accept": "application/json"
                         },
