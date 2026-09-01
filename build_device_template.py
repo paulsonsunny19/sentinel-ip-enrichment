@@ -123,8 +123,10 @@ let NetworkInfoSummary = DeviceNetworkInfo
     | where Timestamp > ago(look)
     | where DeviceId in (DeviceIds)
     | summarize arg_max(Timestamp, *) by DeviceId, NetworkAdapterName
+    | extend SafeNetworkAdapterDnsSuffix=tostring(column_ifexists('NetworkAdapterDnsSuffix', ''))
     | summarize LocalIPAddresses=make_set(IPAddresses, 10), MacAddresses=make_set(MacAddress, 10),
-                ConnectedNetworks=make_set(ConnectedNetworks, 8), DnsSuffixes=make_set(NetworkAdapterDnsSuffix, 8);
+                ConnectedNetworks=make_set(ConnectedNetworks, 8),
+                DnsSuffixes=make_set_if(SafeNetworkAdapterDnsSuffix, isnotempty(SafeNetworkAdapterDnsSuffix), 8);
 Candidates
 | extend Alerts=toint(coalesce(toscalar(AlertSummary | project Alerts), 0)),
          HighSeverityAlerts=toint(coalesce(toscalar(AlertSummary | project HighSeverityAlerts), 0)),
