@@ -6,13 +6,13 @@
     "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts. An optional Microsoft Graph module queries Defender XDR Advanced Hunting data that is not ingested into the Sentinel workspace. Results are posted as one formatted incident comment.",
     "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, appropriately licensed VirusTotal or Shodan access, and Defender XDR licensing plus Microsoft Graph ThreatHunting.Read.All application permission for direct Advanced Hunting.",
     "postDeployment": [
-      "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
+      "Grant the selected managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
       "Grant the same identity 'Log Analytics Reader' on the workspace.",
       "If Defender Advanced Hunting is enabled, grant the managed identity Microsoft Graph application permission 'ThreatHunting.Read.All' using an app-role assignment and allow time for token propagation.",
       "Authorise both API connections (they are pre-set to managed identity).",
       "Attach the playbook to an automation rule, or run it on demand from an incident."
     ],
-    "lastUpdateTime": "2026-08-31",
+    "lastUpdateTime": "2026-09-01",
     "entities": [
       "Ip"
     ],
@@ -31,6 +31,24 @@
       "defaultValue": "Enrich-IP-IncidentComment",
       "metadata": {
         "description": "Name of the Logic App playbook."
+      }
+    },
+    "ManagedIdentityType": {
+      "type": "string",
+      "defaultValue": "SystemAssigned",
+      "allowedValues": [
+        "SystemAssigned",
+        "UserAssigned"
+      ],
+      "metadata": {
+        "description": "Choose SystemAssigned to create an identity with the Logic App, or UserAssigned to attach an existing client-owned managed identity."
+      }
+    },
+    "UserAssignedManagedIdentityResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Required only when ManagedIdentityType is UserAssigned. Enter the full resource ID of one existing user-assigned managed identity in this subscription."
       }
     },
     "WorkspaceName": {
@@ -164,9 +182,7 @@
       "apiVersion": "2017-07-01",
       "name": "[parameters('PlaybookName')]",
       "location": "[resourceGroup().location]",
-      "identity": {
-        "type": "SystemAssigned"
-      },
+      "identity": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), createObject('type', 'UserAssigned', 'userAssignedIdentities', createObject(parameters('UserAssignedManagedIdentityResourceId'), createObject())), createObject('type', 'SystemAssigned'))]",
       "tags": {
         "hidden-SentinelTemplateName": "Enrich-IP-IncidentComment",
         "hidden-SentinelTemplateVersion": "1.0"
@@ -587,10 +603,7 @@
                       "ipAddress": "@{items('For_each_IP_entity')?['Address']}",
                       "api-version": "2023-02-01-preview"
                     },
-                    "authentication": {
-                      "type": "ManagedServiceIdentity",
-                      "audience": "https://management.azure.com"
-                    }
+                    "authentication": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), createObject('type', 'ManagedServiceIdentity', 'audience', 'https://management.azure.com', 'identity', parameters('UserAssignedManagedIdentityResourceId')), createObject('type', 'ManagedServiceIdentity', 'audience', 'https://management.azure.com'))]"
                   }
                 },
                 "Compose_Geo": {
@@ -939,10 +952,7 @@
                           "Query": "let ip = '@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}';\nlet look = @{parameters('DefenderLookbackDays')}d;\nunion isfuzzy=true\n(DeviceNetworkEvents\n | where Timestamp > ago(look)\n | where RemoteIP == ip or LocalIP == ip\n | summarize C = count(), LocalMatches = countif(LocalIP == ip), RemoteMatches = countif(RemoteIP == ip),\n             Devices = make_set(DeviceName, 20), DeviceIds = make_set(DeviceId, 20),\n             Processes = make_set(InitiatingProcessFileName, 12),\n             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 12),\n             Ports = make_set(RemotePort, 10), Actions = make_set(ActionType, 6), Last = max(Timestamp)\n | project Source = 'Defender XDR - device network presence',\n           Detail = strcat('Observed in DeviceNetworkEvents: ', iff(C > 0, 'YES', 'NO'),\n                           ' | ', C, ' event(s), ', LocalMatches, ' local-IP match(es), ',\n                           RemoteMatches, ' remote-IP match(es) | devices: ', tostring(Devices),\n                           ' | device IDs: ', tostring(DeviceIds),\n                           ' | processes: ', tostring(Processes), ' | users: ', tostring(Users),\n                           ' | remote ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last),\n(DeviceLogonEvents\n | where Timestamp > ago(look)\n | where RemoteIP == ip\n | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),\n             Devices = make_set(DeviceName, 5), Accounts = make_set(strcat(AccountDomain, '/', AccountName), 8),\n             LogonTypes = make_set(LogonType, 6), Actions = make_set(ActionType, 6), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - device logons',\n           Detail = strcat(C, ' logon event(s), ', Failures, ' failed | devices: ', tostring(Devices),\n                           ' | accounts: ', tostring(Accounts), ' | types: ', tostring(LogonTypes),\n                           ' | actions: ', tostring(Actions)), Last),\n(CloudAppEvents\n | where Timestamp > ago(look)\n | where IPAddress == ip\n | summarize C = count(), AdminOperations = countif(IsAdminOperation == true),\n             ProxyEvents = countif(IsAnonymousProxy == true), Accounts = make_set(coalesce(AccountId, AccountDisplayName), 8),\n             Applications = make_set(Application, 8), Activities = make_set(ActivityType, 8),\n             Actions = make_set(ActionType, 8), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - cloud apps',\n           Detail = strcat(C, ' activity event(s), ', AdminOperations, ' admin operation(s), ', ProxyEvents,\n                           ' anonymous-proxy event(s) | accounts: ', tostring(Accounts),\n                           ' | applications: ', tostring(Applications), ' | activities: ', tostring(Activities),\n                           ' | actions: ', tostring(Actions)), Last),\n(IdentityLogonEvents\n | where Timestamp > ago(look)\n | where IPAddress == ip or DestinationIPAddress == ip\n | summarize C = count(), Failures = countif(isnotempty(FailureReason) or ActionType has 'Fail'),\n             Accounts = make_set(coalesce(AccountUpn, AccountName), 8), Devices = make_set(DeviceName, 6),\n             Destinations = make_set(DestinationDeviceName, 6), Applications = make_set(Application, 6),\n             Protocols = make_set(Protocol, 6), Actions = make_set(ActionType, 8), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - identity logons',\n           Detail = strcat(C, ' authentication event(s), ', Failures, ' failed | accounts: ', tostring(Accounts),\n                           ' | devices: ', tostring(Devices), ' | destinations: ', tostring(Destinations),\n                           ' | applications: ', tostring(Applications), ' | protocols: ', tostring(Protocols),\n                           ' | actions: ', tostring(Actions)), Last),\n(UrlClickEvents\n | where Timestamp > ago(look)\n | where IPAddress == ip\n | summarize C = count(), ClickThrough = countif(IsClickedThrough == true), Users = make_set(AccountUpn, 8),\n             Workloads = make_set(Workload, 5), Actions = make_set(ActionType, 6),\n             Threats = make_set(ThreatTypes, 6), Urls = make_set(Url, 8), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - URL clicks',\n           Detail = strcat(C, ' click event(s), ', ClickThrough, ' clicked through | users: ', tostring(Users),\n                           ' | workloads: ', tostring(Workloads), ' | actions: ', tostring(Actions),\n                           ' | threats: ', tostring(Threats), ' | URLs: ', tostring(Urls)), Last),\n(EmailEvents\n | where Timestamp > ago(look)\n | where SenderIPv4 == ip or SenderIPv6 == ip\n | summarize C = count(), Recipients = dcount(RecipientEmailAddress), Senders = make_set(SenderFromAddress, 8),\n             Subjects = make_set(Subject, 6), Directions = make_set(EmailDirection, 4),\n             Delivery = make_set(DeliveryAction, 5), Threats = make_set(ThreatTypes, 6), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - email',\n           Detail = strcat(C, ' message event(s) to ', Recipients, ' recipient(s) | senders: ', tostring(Senders),\n                           ' | subjects: ', tostring(Subjects), ' | directions: ', tostring(Directions),\n                           ' | delivery: ', tostring(Delivery), ' | threats: ', tostring(Threats)), Last),\n(AlertEvidence\n | where Timestamp > ago(look)\n | where RemoteIP == ip or LocalIP == ip\n | summarize C = dcount(AlertId), Titles = make_set(Title, 8), Severities = make_set(Severity, 5),\n             Sources = make_set(ServiceSource, 6), Roles = make_set(EvidenceRole, 5), Last = max(Timestamp)\n | where C > 0\n | project Source = 'Defender XDR - alert evidence',\n           Detail = strcat(C, ' alert(s) | titles: ', tostring(Titles), ' | severity: ', tostring(Severities),\n                           ' | services: ', tostring(Sources), ' | evidence roles: ', tostring(Roles)), Last)\n| where isnotempty(Source)\n| order by Last desc\n| take 60",
                           "Timespan": "@{concat('P', string(parameters('DefenderLookbackDays')), 'D')}"
                         },
-                        "authentication": {
-                          "type": "ManagedServiceIdentity",
-                          "audience": "https://graph.microsoft.com"
-                        }
+                        "authentication": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), createObject('type', 'ManagedServiceIdentity', 'audience', 'https://graph.microsoft.com', 'identity', parameters('UserAssignedManagedIdentityResourceId')), createObject('type', 'ManagedServiceIdentity', 'audience', 'https://graph.microsoft.com'))]"
                       },
                       "runtimeConfiguration": {
                         "secureData": {
@@ -1298,9 +1308,7 @@
                 "connectionName": "[variables('SentinelConnectionName')]",
                 "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
                 "connectionProperties": {
-                  "authentication": {
-                    "type": "ManagedServiceIdentity"
-                  }
+                  "authentication": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), createObject('type', 'ManagedServiceIdentity', 'identity', parameters('UserAssignedManagedIdentityResourceId')), createObject('type', 'ManagedServiceIdentity'))]"
                 }
               },
               "azuremonitorlogs": {
@@ -1308,9 +1316,7 @@
                 "connectionName": "[variables('MonitorLogsConnectionName')]",
                 "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
                 "connectionProperties": {
-                  "authentication": {
-                    "type": "ManagedServiceIdentity"
-                  }
+                  "authentication": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), createObject('type', 'ManagedServiceIdentity', 'identity', parameters('UserAssignedManagedIdentityResourceId')), createObject('type', 'ManagedServiceIdentity'))]"
                 }
               }
             }
@@ -1360,9 +1366,17 @@
       "type": "string",
       "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
     },
+    "ManagedIdentityType": {
+      "type": "string",
+      "value": "[parameters('ManagedIdentityType')]"
+    },
+    "ManagedIdentityResourceId": {
+      "type": "string",
+      "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), parameters('UserAssignedManagedIdentityResourceId'), resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')))]"
+    },
     "ManagedIdentityPrincipalId": {
       "type": "string",
-      "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId]"
+      "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId, reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId)]"
     }
   }
 }
