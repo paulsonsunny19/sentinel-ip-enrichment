@@ -233,7 +233,7 @@ DEVICES_ROW = (
     "'<tr><th style=\"" + TH + "\">Registered devices</th><td style=\"" + TD + "\" colspan=\"3\">', "
     "variables('DevicesStatus'), "
     "if(greater(length(variables('DevicesJson')), 0), "
-    "concat(' &nbsp;|&nbsp; ', join(body('Select_Device_Rows'), ', ')), ''), "
+    "concat(' &nbsp;|&nbsp; ', variables('DevicesSummary')), ''), "
     "'</td></tr>'), "
     "concat('<tr><th style=\"" + TH + "\">Registered devices</th><td style=\"" + TD + "\" colspan=\"3\">', variables('DevicesStatus'), '</td></tr>'))"
 )
@@ -421,6 +421,10 @@ definition = {
             "runAfter": after("Init_DevicesStatus"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "DevicesHtml", "type": "string", "value": ""}]},
         },
+        "Init_DevicesSummary": {
+            "runAfter": after("Init_DevicesHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "DevicesSummary", "type": "string", "value": ""}]},
+        },
         "Init_MfaJson": {
             "runAfter": after("Init_DevicesHtml"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "MfaJson", "type": "object", "value": {}}]},
@@ -532,8 +536,12 @@ definition = {
                     "runAfter": after("Reset_DevicesStatus"), "type": "SetVariable",
                     "inputs": {"name": "DevicesHtml", "value": ""},
                 },
-                "Reset_MfaJson": {
+                "Reset_DevicesSummary": {
                     "runAfter": after("Reset_DevicesHtml"), "type": "SetVariable",
+                    "inputs": {"name": "DevicesSummary", "value": ""},
+                },
+                "Reset_MfaJson": {
+                    "runAfter": after("Reset_DevicesSummary"), "type": "SetVariable",
                     "inputs": {"name": "MfaJson", "value": {}},
                 },
                 "Reset_MfaStatus": {
@@ -796,8 +804,15 @@ definition = {
                                 ),
                             },
                         },
-                        "Set_DevicesStatus": {
+                        "Set_DevicesSummary": {
                             "runAfter": after("Select_Device_Rows"), "type": "SetVariable",
+                            "inputs": {
+                                "name": "DevicesSummary",
+                                "value": "@join(body('Select_Device_Rows'), ', ')",
+                            },
+                        },
+                        "Set_DevicesStatus": {
+                            "runAfter": after("Set_DevicesSummary"), "type": "SetVariable",
                             "inputs": {
                                 "name": "DevicesStatus",
                                 "value": (

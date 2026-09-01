@@ -430,6 +430,23 @@
                 ]
               }
             },
+            "Init_DevicesSummary": {
+              "runAfter": {
+                "Init_DevicesHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DevicesSummary",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
             "Init_MfaJson": {
               "runAfter": {
                 "Init_DevicesHtml": [
@@ -816,9 +833,21 @@
                     "value": ""
                   }
                 },
-                "Reset_MfaJson": {
+                "Reset_DevicesSummary": {
                   "runAfter": {
                     "Reset_DevicesHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DevicesSummary",
+                    "value": ""
+                  }
+                },
+                "Reset_MfaJson": {
+                  "runAfter": {
+                    "Reset_DevicesSummary": [
                       "Succeeded"
                     ]
                   },
@@ -1388,9 +1417,21 @@
                         "select": "@concat(coalesce(item()?['displayName'], 'unknown'), ' (', coalesce(item()?['operatingSystem'], '?'), '; ', coalesce(item()?['trustType'], '?'), '; ', if(equals(item()?['isCompliant'], true), 'compliant', 'noncompliant'), if(equals(item()?['isManaged'], true), ', managed)', ')'))"
                       }
                     },
-                    "Set_DevicesStatus": {
+                    "Set_DevicesSummary": {
                       "runAfter": {
                         "Select_Device_Rows": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DevicesSummary",
+                        "value": "@join(body('Select_Device_Rows'), ', ')"
+                      }
+                    },
+                    "Set_DevicesStatus": {
+                      "runAfter": {
+                        "Set_DevicesSummary": [
                           "Succeeded"
                         ]
                       },
@@ -1409,7 +1450,7 @@
                       "type": "SetVariable",
                       "inputs": {
                         "name": "DevicesHtml",
-                        "value": "@if(startsWith(variables('DevicesStatus'), 'available'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), if(greater(length(variables('DevicesJson')), 0), concat(' &nbsp;|&nbsp; ', join(body('Select_Device_Rows'), ', ')), ''), '</td></tr>'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), '</td></tr>'))"
+                        "value": "@if(startsWith(variables('DevicesStatus'), 'available'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), if(greater(length(variables('DevicesJson')), 0), concat(' &nbsp;|&nbsp; ', variables('DevicesSummary')), ''), '</td></tr>'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), '</td></tr>'))"
                       }
                     }
                   },
@@ -1420,7 +1461,7 @@
                         "type": "SetVariable",
                         "inputs": {
                           "name": "DevicesHtml",
-                          "value": "@if(startsWith(variables('DevicesStatus'), 'available'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), if(greater(length(variables('DevicesJson')), 0), concat(' &nbsp;|&nbsp; ', join(body('Select_Device_Rows'), ', ')), ''), '</td></tr>'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), '</td></tr>'))"
+                          "value": "@if(startsWith(variables('DevicesStatus'), 'available'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), if(greater(length(variables('DevicesJson')), 0), concat(' &nbsp;|&nbsp; ', variables('DevicesSummary')), ''), '</td></tr>'), concat('<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Registered devices</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">', variables('DevicesStatus'), '</td></tr>'))"
                         }
                       }
                     }
