@@ -45,7 +45,7 @@ let Sightings = union isfuzzy=true
     SigninLogs
     | where TimeGenerated > ago(look) | where IPAddress == ip
     | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'),
-                Users = make_set(UserPrincipalName, 8), Last = max(TimeGenerated)
+                Users = make_set(UserPrincipalName, 50), Last = max(TimeGenerated)
     | where C > 0
     | project Source = 'SigninLogs',
               Detail = strcat(C, ' sign-ins, ', U, ' user(s), ', F, ' failed | ', tostring(Users)),
@@ -54,9 +54,10 @@ let Sightings = union isfuzzy=true
 (
     AADNonInteractiveUserSignInLogs
     | where TimeGenerated > ago(look) | where IPAddress == ip
-    | summarize C = count(), U = dcount(UserPrincipalName), Last = max(TimeGenerated)
+    | summarize C = count(), U = dcount(UserPrincipalName), Users = make_set(UserPrincipalName, 50), Last = max(TimeGenerated)
     | where C > 0
-    | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s)'), Last
+    | project Source = 'NonInteractiveSignIn',
+              Detail = strcat(C, ' sign-ins, ', U, ' user(s) | ', tostring(Users)), Last
 ),
 (
     AzureActivity
