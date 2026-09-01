@@ -10,6 +10,10 @@ logons, network and process activity, plus Sentinel workspace context. See
 [`README-DEVICE.md`](README-DEVICE.md) and deploy `azuredeploy-device.json`. The IP and device
 playbooks are independent and can both be attached to the same incident automation rule.
 
+A third, separate **URL enrichment playbook** enriches Sentinel URL entities with Microsoft
+Defender Threat Intelligence (MDTI), Defender XDR URL activity, Sentinel threat intelligence and
+workspace sightings. See [`README-URL.md`](README-URL.md) and deploy `azuredeploy-url.json`.
+
 ## Sources and what they cost
 
 | Source | Cost | Key | Limit | Licence note |
@@ -61,6 +65,11 @@ azuredeploy-device.json                    separate Host/device enrichment ARM t
 build_device_template.py                   generator for the device template
 kql/Defender-XDR-Device-Enrichment.kql     standalone device Advanced Hunting validation query
 README-DEVICE.md                           device sources, verdict logic, permissions and deployment
+
+azuredeploy-url.json                       separate URL enrichment ARM template
+build_url_template.py                      generator for the URL template
+kql/Defender-XDR-URL-Enrichment.kql        standalone Defender URL validation query
+README-URL.md                              URL sources, verdict logic, permissions and deployment
 ```
 
 ## Deploy (about 10 minutes)
