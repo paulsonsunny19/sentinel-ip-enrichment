@@ -22,11 +22,11 @@ let TI = union isfuzzy=true
  | project Source = 'Threat Intel', Detail = strcat('TI match - ', tostring(Data.description), ' | confidence: ', tostring(Confidence)), Last = TimeGenerated);
 let Sightings = union isfuzzy=true
 (SigninLogs | where TimeGenerated > ago(look) | where IPAddress == ip
- | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'), Users = make_set(UserPrincipalName, 8), Last = max(TimeGenerated)
+ | summarize C = count(), U = dcount(UserPrincipalName), F = countif(ResultType != '0'), Users = make_set(UserPrincipalName, 50), Last = max(TimeGenerated)
  | where C > 0 | project Source = 'SigninLogs', Detail = strcat(C, ' sign-ins, ', U, ' user(s), ', F, ' failed | ', tostring(Users)), Last),
 (AADNonInteractiveUserSignInLogs | where TimeGenerated > ago(look) | where IPAddress == ip
- | summarize C = count(), U = dcount(UserPrincipalName), Last = max(TimeGenerated)
- | where C > 0 | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s)'), Last),
+ | summarize C = count(), U = dcount(UserPrincipalName), Users = make_set(UserPrincipalName, 50), Last = max(TimeGenerated)
+ | where C > 0 | project Source = 'NonInteractiveSignIn', Detail = strcat(C, ' sign-ins, ', U, ' user(s) | ', tostring(Users)), Last),
 (AzureActivity | where TimeGenerated > ago(look) | where CallerIpAddress == ip
  | summarize C = count(), Callers = make_set(Caller, 5), Last = max(TimeGenerated)
  | where C > 0 | project Source = 'AzureActivity', Detail = strcat(C, ' operations | callers: ', tostring(Callers)), Last),
@@ -115,13 +115,16 @@ union isfuzzy=true
 (DeviceNetworkEvents
  | where Timestamp > ago(look)
  | where RemoteIP == ip or LocalIP == ip
- | summarize C = count(), Devices = make_set(DeviceName, 5),
-             Processes = make_set(InitiatingProcessFileName, 8),
-             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 5),
+ | summarize C = count(), LocalMatches = countif(LocalIP == ip), RemoteMatches = countif(RemoteIP == ip),
+             Devices = make_set(DeviceName, 20), DeviceIds = make_set(DeviceId, 20),
+             Processes = make_set(InitiatingProcessFileName, 12),
+             Users = make_set(coalesce(InitiatingProcessAccountUpn, InitiatingProcessAccountName), 12),
              Ports = make_set(RemotePort, 10), Actions = make_set(ActionType, 6), Last = max(Timestamp)
- | where C > 0
- | project Source = 'Defender XDR - endpoint network',
-           Detail = strcat(C, ' connection event(s) | devices: ', tostring(Devices),
+ | project Source = 'Defender XDR - device network presence',
+           Detail = strcat('Observed in DeviceNetworkEvents: ', iff(C > 0, 'YES', 'NO'),
+                           ' | ', C, ' event(s), ', LocalMatches, ' local-IP match(es), ',
+                           RemoteMatches, ' remote-IP match(es) | devices: ', tostring(Devices),
+                           ' | device IDs: ', tostring(DeviceIds),
                            ' | processes: ', tostring(Processes), ' | users: ', tostring(Users),
                            ' | remote ports: ', tostring(Ports), ' | actions: ', tostring(Actions)), Last),
 (DeviceLogonEvents
@@ -235,6 +238,38 @@ SigninLogs
     AuthRequirement = tostring(AuthenticationRequirement)
 | take 1"""
 
+SIGNIN_USERS_KQL = f"""let ip = '{KQL_IP}';
+let look = {LOOK};
+let SignIns = union isfuzzy=true
+(SigninLogs
+ | where TimeGenerated > ago(look) and IPAddress == ip
+ | extend SignInClass = 'Interactive',
+          DisplayName = coalesce(tostring(column_ifexists('UserDisplayName', '')), tostring(Identity), tostring(UserPrincipalName))
+ | project TimeGenerated, UserPrincipalName=tostring(UserPrincipalName), DisplayName,
+           AppDisplayName=tostring(AppDisplayName), ResultType=tostring(ResultType), SignInClass),
+(AADNonInteractiveUserSignInLogs
+ | where TimeGenerated > ago(look) and IPAddress == ip
+ | extend SignInClass = 'Non-interactive',
+          DisplayName = coalesce(tostring(column_ifexists('UserDisplayName', '')), tostring(Identity), tostring(UserPrincipalName))
+ | project TimeGenerated, UserPrincipalName=tostring(UserPrincipalName), DisplayName,
+           AppDisplayName=tostring(AppDisplayName), ResultType=tostring(ResultType), SignInClass);
+SignIns
+| where isnotempty(UserPrincipalName)
+| summarize InteractiveSignIns=countif(SignInClass == 'Interactive'),
+            NonInteractiveSignIns=countif(SignInClass == 'Non-interactive'),
+            FailedSignIns=countif(ResultType != '0'),
+            DisplayNames=make_set(DisplayName, 5), Applications=make_set(AppDisplayName, 12),
+            FirstSeen=min(TimeGenerated), LastSeen=max(TimeGenerated) by UserPrincipalName
+| extend DisplayName=iff(array_length(DisplayNames) > 0, tostring(DisplayNames[0]), UserPrincipalName)
+| project DisplayName, UserPrincipalName,
+          TotalSignIns=InteractiveSignIns + NonInteractiveSignIns,
+          InteractiveSignIns, NonInteractiveSignIns, FailedSignIns,
+          Applications=tostring(Applications),
+          FirstSeen=format_datetime(FirstSeen, 'yyyy-MM-dd HH:mm:ss'),
+          LastSeen=format_datetime(LastSeen, 'yyyy-MM-dd HH:mm:ss')
+| order by LastSeen desc
+| take 100"""
+
 # ---- shared inline styles (Sentinel's comment pane keeps inline styles) --------------
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap"
 TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top"
@@ -303,6 +338,12 @@ IP enrichment &mdash; <code>{IP}</code>
 </table>
 
 @{{variables('SigninHtml')}}
+
+<div style="{H4}"><b>Users signed in from this IP &mdash; last @{{parameters('LookbackDays')}} days</b> <span style="font-weight:400;color:#605e5c">(interactive + non-interactive; up to 100 distinct users)</span></div>
+<table style="{TBL}">
+<tr><th style="{TH}">User</th><th style="{TH}">Sign-ins</th><th style="{TH}">Failed</th><th style="{TH}">Applications</th><th style="{TH}">First / last seen (UTC)</th></tr>
+@{{if(empty(outputs('Compose_SigninUsers')), concat('<tr><td style="{TD}" colspan="5">No user sign-ins from this IP in the selected lookback, or the required Entra sign-in tables are not collected.</td></tr>'), join(body('Select_SigninUsers'), ''))}}
+</table>
 
 @{{if(empty(concat(variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'))), '', concat('<div style="{H4}"><b>Reputation</b></div><table style="{TBL}">', variables('AbuseHtml'), variables('VTHtml'), variables('GreyNoiseHtml'), variables('ShodanHtml'), '</table>'))}}
 
@@ -849,9 +890,45 @@ definition = {
                         }
                     },
                 },
+                "Run_KQL_signin_users": {
+                    "runAfter": after("Condition_signin_found"), "type": "ApiConnection",
+                    "inputs": {
+                        "host": {"connection": {"name": LA_CONN}},
+                        "method": "post",
+                        "body": SIGNIN_USERS_KQL,
+                        "path": "/queryData",
+                        "queries": {
+                            "subscriptions": "@parameters('WorkspaceSubscriptionId')",
+                            "resourcegroups": "@parameters('WorkspaceResourceGroup')",
+                            "resourcetype": "Log Analytics Workspace",
+                            "resourcename": "@parameters('WorkspaceName')",
+                            "timerange": "Set in query",
+                        },
+                    },
+                },
+                "Compose_SigninUsers": {
+                    "runAfter": after("Run_KQL_signin_users", states=("Succeeded", "Failed", "TimedOut")),
+                    "type": "Compose",
+                    "inputs": ("@if(equals(actions('Run_KQL_signin_users')?['status'], 'Succeeded'), "
+                               "coalesce(body('Run_KQL_signin_users')?['value'], json('[]')), json('[]'))"),
+                },
+                "Select_SigninUsers": {
+                    "runAfter": after("Compose_SigninUsers"), "type": "Select",
+                    "inputs": {
+                        "from": "@outputs('Compose_SigninUsers')",
+                        "select": (f'<tr><td style="{TD}"><b>@{{item()?[\'DisplayName\']}}</b><br>'
+                                   f'<code style="font-size:11px">@{{item()?[\'UserPrincipalName\']}}</code></td>'
+                                   f'<td style="{TD}"><b>@{{item()?[\'TotalSignIns\']}}</b> total<br>'
+                                   f'@{{item()?[\'InteractiveSignIns\']}} interactive / '
+                                   f'@{{item()?[\'NonInteractiveSignIns\']}} non-interactive</td>'
+                                   f'<td style="{TD}">@{{item()?[\'FailedSignIns\']}}</td>'
+                                   f'<td style="{TD}">@{{item()?[\'Applications\']}}</td>'
+                                   f'<td style="{TD}">@{{item()?[\'FirstSeen\']}}<br>@{{item()?[\'LastSeen\']}}</td></tr>'),
+                    },
+                },
                 # workspace insights
                 "Run_KQL_insights": {
-                    "runAfter": after("Condition_signin_found"), "type": "ApiConnection",
+                    "runAfter": after("Select_SigninUsers"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": LA_CONN}},
                         "method": "post",
