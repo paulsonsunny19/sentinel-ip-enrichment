@@ -67,15 +67,9 @@ README-DEVICE.md                           device sources, verdict logic, permis
 
 **1. Deploy the template**
 
-```bash
-az deployment group create \
-  --resource-group <rg-holding-your-workspace> \
-  --template-file azuredeploy.json \
-  --parameters WorkspaceName=bfree-sentinel-law LookbackDays=14
-```
-
-`ManagedIdentityType` defaults to `SystemAssigned`. To attach a pre-created, client-owned
-user-assigned managed identity instead, pass its full resource ID:
+The IP playbook is user-assigned-managed-identity-only. Create the identity first (or select an
+existing client-owned identity), then pass its full resource ID. The template does not enable a
+system-assigned identity.
 
 ```bash
 UAMI_ID=$(az identity show \
@@ -87,21 +81,24 @@ az deployment group create \
   --resource-group <rg-holding-your-workspace> \
   --template-file azuredeploy.json \
   --parameters WorkspaceName=bfree-sentinel-law \
-               ManagedIdentityType=UserAssigned \
+               LookbackDays=14 \
                UserAssignedManagedIdentityResourceId="$UAMI_ID"
 ```
 
 The user-assigned identity must already exist in the client's tenant and subscription. The
 deployment principal needs permission to write the Logic App and `Managed Identity Operator` (or
 the equivalent `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`) over that identity.
-The selected identity is used for every managed-identity operation in the workflow.
+The user-assigned identity is attached to the Logic App and explicitly used by the Microsoft
+Sentinel connector, Azure Monitor Logs connector, Sentinel geodata HTTP call and Microsoft Graph
+Defender Advanced Hunting call. External services such as AbuseIPDB, GreyNoise and VirusTotal do
+not accept Azure managed identity tokens and still require their own optional API keys.
 
 Everything works with no keys at all. Add `AbuseIPDBApiKey=<key>` and/or
 `GreyNoiseApiKey=<key>` if you want those reputation rows. Do not enable Shodan or supply a
 VirusTotal key until the client's licences cover this business workflow.
 
-**2. Grant the selected managed identity two roles.** The deployment always outputs its object ID
-as `ManagedIdentityPrincipalId`, regardless of which identity type was selected.
+**2. Grant the user-assigned managed identity two roles.** The deployment outputs its service
+principal object ID as `ManagedIdentityPrincipalId`.
 
 ```bash
 PID=$(az deployment group show -g <rg> -n azuredeploy \
@@ -173,8 +170,7 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
 | Parameter | Default | Notes |
 |---|---|---|
 | `PlaybookName` | `Enrich-IP-IncidentComment` | |
-| `ManagedIdentityType` | `SystemAssigned` | choose `SystemAssigned` or `UserAssigned` at deployment |
-| `UserAssignedManagedIdentityResourceId` | blank | required when `ManagedIdentityType=UserAssigned`; full resource ID of one existing client-owned UAMI |
+| `UserAssignedManagedIdentityResourceId` | *(required)* | full resource ID of one existing client-owned UAMI; the template never enables a system-assigned identity |
 | `WorkspaceName` | *(required)* | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current | set if the workspace lives elsewhere |
 | `LookbackDays` | `14` | how far back sightings and sign-in context look |
