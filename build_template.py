@@ -2,6 +2,39 @@
 """Generates azuredeploy.json for the Enrich-IP-IncidentComment Sentinel playbook."""
 import json, pathlib
 
+
+MANAGED_IDENTITY_RESOURCE = (
+    "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), "
+    "createObject('type', 'UserAssigned', 'userAssignedIdentities', "
+    "createObject(parameters('UserAssignedManagedIdentityResourceId'), createObject())), "
+    "createObject('type', 'SystemAssigned'))]"
+)
+
+
+def managed_identity_authentication(audience=None):
+    """Return an ARM expression that selects system- or user-assigned MSI auth."""
+    system_arguments = ["'type'", "'ManagedServiceIdentity'"]
+    if audience:
+        system_arguments.extend(["'audience'", f"'{audience}'"])
+    user_arguments = system_arguments + [
+        "'identity'",
+        "parameters('UserAssignedManagedIdentityResourceId')",
+    ]
+    return (
+        "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), "
+        f"createObject({', '.join(user_arguments)}), "
+        f"createObject({', '.join(system_arguments)}))]"
+    )
+
+
+CONNECTOR_MANAGED_IDENTITY_AUTH = managed_identity_authentication()
+AZURE_MANAGEMENT_MANAGED_IDENTITY_AUTH = managed_identity_authentication(
+    "https://management.azure.com"
+)
+MICROSOFT_GRAPH_MANAGED_IDENTITY_AUTH = managed_identity_authentication(
+    "https://graph.microsoft.com"
+)
+
 IP = "@{items('For_each_IP_entity')?['Address']}"
 KQL_IP = "@{replace(items('For_each_IP_entity')?['Address'], decodeUriComponent('%27'), '')}"
 LOOK = "@{parameters('LookbackDays')}d"
@@ -641,10 +674,7 @@ definition = {
                             "ipAddress": "@{items('For_each_IP_entity')?['Address']}",
                             "api-version": "2023-02-01-preview",
                         },
-                        "authentication": {
-                            "type": "ManagedServiceIdentity",
-                            "audience": "https://management.azure.com",
-                        },
+                        "authentication": AZURE_MANAGEMENT_MANAGED_IDENTITY_AUTH,
                     },
                 },
                 "Compose_Geo": {
@@ -812,10 +842,7 @@ definition = {
                                     "Query": DEFENDER_KQL,
                                     "Timespan": "@{concat('P', string(parameters('DefenderLookbackDays')), 'D')}",
                                 },
-                                "authentication": {
-                                    "type": "ManagedServiceIdentity",
-                                    "audience": "https://graph.microsoft.com",
-                                },
+                                "authentication": MICROSOFT_GRAPH_MANAGED_IDENTITY_AUTH,
                             },
                             "runtimeConfiguration": {"secureData": {"properties": ["inputs", "outputs"]}},
                         },
@@ -1032,13 +1059,13 @@ template = {
         "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts. An optional Microsoft Graph module queries Defender XDR Advanced Hunting data that is not ingested into the Sentinel workspace. Results are posted as one formatted incident comment.",
         "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, appropriately licensed VirusTotal or Shodan access, and Defender XDR licensing plus Microsoft Graph ThreatHunting.Read.All application permission for direct Advanced Hunting.",
         "postDeployment": [
-            "Grant the playbook's system-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
+            "Grant the selected managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
             "Grant the same identity 'Log Analytics Reader' on the workspace.",
             "If Defender Advanced Hunting is enabled, grant the managed identity Microsoft Graph application permission 'ThreatHunting.Read.All' using an app-role assignment and allow time for token propagation.",
             "Authorise both API connections (they are pre-set to managed identity).",
             "Attach the playbook to an automation rule, or run it on demand from an incident."
         ],
-        "lastUpdateTime": "2026-08-31",
+        "lastUpdateTime": "2026-09-01",
         "entities": ["Ip"],
         "tags": ["Enrichment", "Threat Intelligence", "Geolocation"],
         "support": {"tier": "community"},
@@ -1046,6 +1073,21 @@ template = {
     "parameters": {
         "PlaybookName": {"type": "string", "defaultValue": "Enrich-IP-IncidentComment",
                          "metadata": {"description": "Name of the Logic App playbook."}},
+        "ManagedIdentityType": {
+            "type": "string",
+            "defaultValue": "SystemAssigned",
+            "allowedValues": ["SystemAssigned", "UserAssigned"],
+            "metadata": {
+                "description": "Choose SystemAssigned to create an identity with the Logic App, or UserAssigned to attach an existing client-owned managed identity."
+            },
+        },
+        "UserAssignedManagedIdentityResourceId": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Required only when ManagedIdentityType is UserAssigned. Enter the full resource ID of one existing user-assigned managed identity in this subscription."
+            },
+        },
         "WorkspaceName": {"type": "string",
                           "metadata": {"description": "Log Analytics / Sentinel workspace name."}},
         "WorkspaceResourceGroup": {"type": "string", "defaultValue": "[resourceGroup().name]",
@@ -1102,7 +1144,7 @@ template = {
             "type": "Microsoft.Logic/workflows", "apiVersion": "2017-07-01",
             "name": "[parameters('PlaybookName')]",
             "location": "[resourceGroup().location]",
-            "identity": {"type": "SystemAssigned"},
+            "identity": MANAGED_IDENTITY_RESOURCE,
             "tags": {"hidden-SentinelTemplateName": "Enrich-IP-IncidentComment",
                      "hidden-SentinelTemplateVersion": "1.0"},
             "dependsOn": [
@@ -1119,13 +1161,13 @@ template = {
                                 "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
                                 "connectionName": "[variables('SentinelConnectionName')]",
                                 "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
-                                "connectionProperties": {"authentication": {"type": "ManagedServiceIdentity"}},
+                                "connectionProperties": {"authentication": CONNECTOR_MANAGED_IDENTITY_AUTH},
                             },
                             "azuremonitorlogs": {
                                 "connectionId": "[resourceId('Microsoft.Web/connections', variables('MonitorLogsConnectionName'))]",
                                 "connectionName": "[variables('MonitorLogsConnectionName')]",
                                 "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]",
-                                "connectionProperties": {"authentication": {"type": "ManagedServiceIdentity"}},
+                                "connectionProperties": {"authentication": CONNECTOR_MANAGED_IDENTITY_AUTH},
                             },
                         }
                     },
@@ -1147,7 +1189,15 @@ template = {
     ],
     "outputs": {
         "PlaybookResourceId": {"type": "string", "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"},
-        "ManagedIdentityPrincipalId": {"type": "string", "value": "[reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId]"},
+        "ManagedIdentityType": {"type": "string", "value": "[parameters('ManagedIdentityType')]"},
+        "ManagedIdentityResourceId": {
+            "type": "string",
+            "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), parameters('UserAssignedManagedIdentityResourceId'), resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')))]",
+        },
+        "ManagedIdentityPrincipalId": {
+            "type": "string",
+            "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId, reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId)]",
+        },
     },
 }
 
