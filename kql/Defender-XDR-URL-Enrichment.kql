@@ -1,0 +1,99 @@
+// Run in Microsoft Defender > Hunting > Advanced Hunting.
+// Supply both the complete normalized URL and its hostname. This validation query
+// mirrors the URL playbook's Defender sources without assuming optional columns.
+let UrlInput = tolower('https://example.com/path');
+let HostInput = tolower('example.com');
+let Lookback = 14d;
+union isfuzzy=true
+(
+    UrlClickEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeUrl = tolower(tostring(column_ifexists('Url', ''))),
+             SafeChain = tolower(tostring(column_ifexists('UrlChain', ''))),
+             SafeUser = tostring(column_ifexists('AccountUpn', '')),
+             SafeAction = tostring(column_ifexists('ActionType', '')),
+             SafeWorkload = tostring(column_ifexists('Workload', '')),
+             SafeThreat = tostring(column_ifexists('ThreatTypes', '')),
+             SafeIP = tostring(column_ifexists('IPAddress', '')),
+             SafeClickedThrough = tostring(column_ifexists('IsClickedThrough', false))
+    | where SafeUrl == UrlInput
+        or SafeUrl contains HostInput
+        or SafeChain contains UrlInput
+        or SafeChain contains HostInput
+    | project Timestamp,
+              Source = 'Safe Links click',
+              Detail = strcat('action: ', SafeAction,
+                              ' | workload: ', SafeWorkload,
+                              ' | threat: ', SafeThreat,
+                              ' | clicked through: ', SafeClickedThrough),
+              URL = SafeUrl,
+              User = SafeUser,
+              Device = '',
+              IPAddress = SafeIP
+),
+(
+    EmailUrlInfo
+    | where Timestamp > ago(Lookback)
+    | extend SafeUrl = tolower(tostring(column_ifexists('Url', ''))),
+             SafeDomain = tolower(tostring(column_ifexists('UrlDomain', ''))),
+             SafeLocation = tostring(column_ifexists('UrlLocation', '')),
+             SafeMessage = tostring(column_ifexists('NetworkMessageId', ''))
+    | where SafeUrl == UrlInput or SafeUrl contains HostInput or SafeDomain == HostInput
+    | project Timestamp,
+              Source = 'Email URL reference',
+              Detail = strcat('location: ', SafeLocation, ' | message: ', SafeMessage),
+              URL = SafeUrl,
+              User = '',
+              Device = '',
+              IPAddress = ''
+),
+(
+    DeviceNetworkEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeUrl = tolower(tostring(column_ifexists('RemoteUrl', ''))),
+             SafeDevice = tostring(column_ifexists('DeviceName', '')),
+             SafeIP = tostring(column_ifexists('RemoteIP', '')),
+             SafeProcess = tostring(column_ifexists('InitiatingProcessFileName', '')),
+             SafeAccount = tostring(column_ifexists('InitiatingProcessAccountUpn', '')),
+             SafeAction = tostring(column_ifexists('ActionType', ''))
+    | where SafeUrl == UrlInput or SafeUrl contains HostInput
+    | project Timestamp,
+              Source = 'Device network event',
+              Detail = strcat('action: ', SafeAction, ' | process: ', SafeProcess),
+              URL = SafeUrl,
+              User = SafeAccount,
+              Device = SafeDevice,
+              IPAddress = SafeIP
+),
+(
+    AlertEvidence
+    | where Timestamp > ago(Lookback)
+    | extend SafeUrl = tolower(tostring(column_ifexists('RemoteUrl', ''))),
+             SafeTitle = tostring(column_ifexists('Title', '')),
+             SafeSeverity = tostring(column_ifexists('Severity', '')),
+             SafeService = tostring(column_ifexists('ServiceSource', '')),
+             SafeRole = tostring(column_ifexists('EvidenceRole', '')),
+             SafeUser = tostring(column_ifexists('AccountUpn', '')),
+             SafeDevice = tostring(column_ifexists('DeviceName', '')),
+             SafeIP = tostring(column_ifexists('RemoteIP', '')),
+             SafeAlertId = tostring(column_ifexists('AlertId', ''))
+    | where SafeUrl == UrlInput or SafeUrl contains HostInput
+    | project Timestamp,
+              Source = 'Alert evidence',
+              Detail = strcat('title: ', SafeTitle,
+                              ' | severity: ', SafeSeverity,
+                              ' | service: ', SafeService,
+                              ' | role: ', SafeRole,
+                              ' | alert: ', SafeAlertId),
+              URL = SafeUrl,
+              User = SafeUser,
+              Device = SafeDevice,
+              IPAddress = SafeIP
+),
+(
+    datatable(Timestamp:datetime, Source:string, Detail:string, URL:string,
+              User:string, Device:string, IPAddress:string)[]
+)
+| order by Timestamp desc
+| take 200
+
