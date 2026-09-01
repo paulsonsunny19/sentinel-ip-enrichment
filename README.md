@@ -74,11 +74,34 @@ az deployment group create \
   --parameters WorkspaceName=bfree-sentinel-law LookbackDays=14
 ```
 
+`ManagedIdentityType` defaults to `SystemAssigned`. To attach a pre-created, client-owned
+user-assigned managed identity instead, pass its full resource ID:
+
+```bash
+UAMI_ID=$(az identity show \
+  --resource-group <identity-resource-group> \
+  --name <identity-name> \
+  --query id -o tsv)
+
+az deployment group create \
+  --resource-group <rg-holding-your-workspace> \
+  --template-file azuredeploy.json \
+  --parameters WorkspaceName=bfree-sentinel-law \
+               ManagedIdentityType=UserAssigned \
+               UserAssignedManagedIdentityResourceId="$UAMI_ID"
+```
+
+The user-assigned identity must already exist in the client's tenant and subscription. The
+deployment principal needs permission to write the Logic App and `Managed Identity Operator` (or
+the equivalent `Microsoft.ManagedIdentity/userAssignedIdentities/assign/action`) over that identity.
+The selected identity is used for every managed-identity operation in the workflow.
+
 Everything works with no keys at all. Add `AbuseIPDBApiKey=<key>` and/or
 `GreyNoiseApiKey=<key>` if you want those reputation rows. Do not enable Shodan or supply a
 VirusTotal key until the client's licences cover this business workflow.
 
-**2. Grant the managed identity two roles.** The deployment outputs `ManagedIdentityPrincipalId`.
+**2. Grant the selected managed identity two roles.** The deployment always outputs its object ID
+as `ManagedIdentityPrincipalId`, regardless of which identity type was selected.
 
 ```bash
 PID=$(az deployment group show -g <rg> -n azuredeploy \
@@ -150,6 +173,8 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
 | Parameter | Default | Notes |
 |---|---|---|
 | `PlaybookName` | `Enrich-IP-IncidentComment` | |
+| `ManagedIdentityType` | `SystemAssigned` | choose `SystemAssigned` or `UserAssigned` at deployment |
+| `UserAssignedManagedIdentityResourceId` | blank | required when `ManagedIdentityType=UserAssigned`; full resource ID of one existing client-owned UAMI |
 | `WorkspaceName` | *(required)* | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current | set if the workspace lives elsewhere |
 | `LookbackDays` | `14` | how far back sightings and sign-in context look |
