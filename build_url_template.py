@@ -270,6 +270,52 @@ DEFENDER_DISABLED_BLOCK = f"""<div style="{H4}"><b>Defender XDR URL activity</b>
 <table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
 
 
+VT_BLOCK = f"""<div style="{H4}"><b>VirusTotal</b> <span style="font-weight:400;color:#605e5c">(community engine consensus)</span></div>
+<table style="{TBL}">
+<tr><th style="{TH}">Status</th><td style="{TD}">@{{variables('VTStatus')}}</td><th style="{TH}">Link</th><td style="{TD}"><a href="https://www.virustotal.com/gui/url/@{{outputs('Compose_VT_URL_Id')}}">open in VirusTotal</a></td></tr>
+<tr><th style="{TH}">Detections</th><td style="{TD}" colspan="3">malicious: <b>@{{string(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0))}}</b> &nbsp;|&nbsp; suspicious: @{{string(coalesce(variables('VTJson')?['last_analysis_stats']?['suspicious'], 0))}} &nbsp;|&nbsp; harmless: @{{string(coalesce(variables('VTJson')?['last_analysis_stats']?['harmless'], 0))}} &nbsp;|&nbsp; undetected: @{{string(coalesce(variables('VTJson')?['last_analysis_stats']?['undetected'], 0))}}</td></tr>
+<tr><th style="{TH}">Reputation</th><td style="{TD}">@{{string(coalesce(variables('VTJson')?['reputation'], 'n/a'))}}</td><th style="{TH}">Categories</th><td style="{TD}">@{{string(coalesce(variables('VTJson')?['categories'], json('{{}}')))}}</td></tr>
+</table>"""
+
+
+VT_DISABLED_BLOCK = f"""<div style="{H4}"><b>VirusTotal</b></div>
+<table style="{TBL}"><tr><td style="{TD}">Skipped &mdash; no API key supplied at deployment. The free public API forbids business-workflow use; supply a Premium key to enable.</td></tr></table>"""
+
+
+SAFEBROWSING_BLOCK = f"""<div style="{H4}"><b>Google Safe Browsing</b></div>
+<table style="{TBL}">
+<tr><th style="{TH}">Status</th><td style="{TD}" colspan="3">@{{variables('SafeBrowsingStatus')}}</td></tr>
+<tr><th style="{TH}">Matches</th><td style="{TD}" colspan="3"><b>@{{string(length(variables('SafeBrowsingJson')))}}</b> threat match(es): @{{string(variables('SafeBrowsingJson'))}}</td></tr>
+</table>"""
+
+
+SAFEBROWSING_DISABLED_BLOCK = f"""<div style="{H4}"><b>Google Safe Browsing</b></div>
+<table style="{TBL}"><tr><td style="{TD}">Skipped &mdash; no API key supplied at deployment.</td></tr></table>"""
+
+
+URLSCAN_BLOCK = f"""<div style="{H4}"><b>urlscan.io</b> <span style="font-weight:400;color:#605e5c">(prior public scans)</span></div>
+<table style="{TBL}">
+<tr><th style="{TH}">Status</th><td style="{TD}">@{{variables('UrlscanStatus')}}</td><th style="{TH}">Search</th><td style="{TD}"><a href="https://urlscan.io/search/#domain:@{{outputs('Compose_URL_Host')}}">open in urlscan.io</a></td></tr>
+<tr><th style="{TH}">Results</th><td style="{TD}" colspan="3"><b>@{{string(coalesce(variables('UrlscanJson')?['Total'], 0))}}</b> scan(s) found &nbsp;|&nbsp; <b>@{{string(coalesce(variables('UrlscanJson')?['MaliciousCount'], 0))}} flagged malicious</b></td></tr>
+<tr><th style="{TH}">Most recent scan</th><td style="{TD}" colspan="3">@{{string(coalesce(variables('UrlscanJson')?['First']?['page']?['url'], 'n/a'))}} &nbsp;|&nbsp; IP: @{{string(coalesce(variables('UrlscanJson')?['First']?['page']?['ip'], 'n/a'))}} &nbsp;|&nbsp; ASN: @{{string(coalesce(variables('UrlscanJson')?['First']?['page']?['asn'], 'n/a'))}} @{{string(coalesce(variables('UrlscanJson')?['First']?['page']?['asnname'], ''))}} &nbsp;|&nbsp; country: @{{string(coalesce(variables('UrlscanJson')?['First']?['page']?['country'], 'n/a'))}}</td></tr>
+</table>"""
+
+
+URLSCAN_DISABLED_BLOCK = f"""<div style="{H4}"><b>urlscan.io</b></div>
+<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
+
+
+PHISHTANK_BLOCK = f"""<div style="{H4}"><b>PhishTank</b></div>
+<table style="{TBL}">
+<tr><th style="{TH}">Status</th><td style="{TD}">@{{variables('PhishTankStatus')}}</td><th style="{TH}">Detail</th><td style="{TD}">@{{if(empty(coalesce(variables('PhishTankJson')?['phish_detail_page'], '')), 'n/a', concat('<a href=\"', variables('PhishTankJson')?['phish_detail_page'], '\">open in PhishTank</a>'))}}</td></tr>
+<tr><th style="{TH}">In database</th><td style="{TD}">@{{string(coalesce(variables('PhishTankJson')?['in_database'], false))}}</td><th style="{TH}">Verified phish</th><td style="{TD}"><b>@{{string(coalesce(variables('PhishTankJson')?['valid'], 'n/a'))}}</b> (verified: @{{string(coalesce(variables('PhishTankJson')?['verified'], 'n/a'))}})</td></tr>
+</table>"""
+
+
+PHISHTANK_DISABLED_BLOCK = f"""<div style="{H4}"><b>PhishTank</b></div>
+<table style="{TBL}"><tr><td style="{TD}">Disabled by deployment setting.</td></tr></table>"""
+
+
 VERDICT_STYLE = (
     "@if(equals(outputs('Compose_Verdict'), 'HIGH'), '%s#a4262c', "
     "if(equals(outputs('Compose_Verdict'), 'MEDIUM'), '%s#986f0b', "
@@ -284,14 +330,24 @@ VERDICT = (
     "greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 70), "
     "greater(int(coalesce(variables('DefenderJson')?['ThreatClicks'], 0)), 0), "
     "greater(int(coalesce(variables('DefenderJson')?['HighAlerts'], 0)), 0), "
-    "greater(length(body('Filter_High_Workspace_Findings')), 0)), 'HIGH', "
+    "greater(length(body('Filter_High_Workspace_Findings')), 0), "
+    "greater(int(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0)), 0), "
+    "greater(length(variables('SafeBrowsingJson')), 0), "
+    "greater(int(coalesce(variables('UrlscanJson')?['MaliciousCount'], 0)), 0), "
+    "and(equals(toLower(string(coalesce(variables('PhishTankJson')?['in_database'], false))), 'true'), "
+    "equals(toLower(string(coalesce(variables('PhishTankJson')?['valid'], ''))), 'y')"
+    ")), 'HIGH', "
     "if(or("
     "equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'suspicious'), "
     "greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 40), "
     "greater(int(coalesce(variables('DefenderJson')?['ClickedThrough'], 0)), 0), "
     "greater(int(coalesce(variables('DefenderJson')?['Alerts'], 0)), 0), "
     "greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), "
-    "greater(length(outputs('Compose_Workspace_Rows')), 0)), 'MEDIUM', "
+    "greater(length(outputs('Compose_Workspace_Rows')), 0), "
+    "greater(int(coalesce(variables('VTJson')?['last_analysis_stats']?['suspicious'], 0)), 0), "
+    "greater(int(coalesce(variables('UrlscanJson')?['Total'], 0)), 0), "
+    "equals(toLower(string(coalesce(variables('PhishTankJson')?['in_database'], false))), 'true')"
+    "), 'MEDIUM', "
     "if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'benign'), "
     "equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'neutral')), "
     "'LOW', 'UNKNOWN')))"
@@ -301,6 +357,10 @@ VERDICT = (
 VERDICT_REASON = (
     "@concat('MDTI: ', variables('MDTIStatus'), "
     "' &middot; Defender: ', variables('DefenderStatus'), "
+    "' &middot; VT: ', variables('VTStatus'), "
+    "' &middot; Safe Browsing: ', variables('SafeBrowsingStatus'), "
+    "' &middot; urlscan.io: ', variables('UrlscanStatus'), "
+    "' &middot; PhishTank: ', variables('PhishTankStatus'), "
     "' &middot; observations: ', string(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), "
     "' &middot; workspace rows: ', string(length(outputs('Compose_Workspace_Rows'))))"
 )
@@ -308,17 +368,20 @@ VERDICT_REASON = (
 
 URL_BLOCK = f"""<hr style="border:0;border-top:1px solid #e1dfdd;margin:16px 0">
 <div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px">
-@{{outputs('Compose_Entity_Kind')}} enrichment &mdash; <code>@{{outputs('Compose_Display_URL')}}</code>
+URL enrichment &mdash; <code>@{{outputs('Compose_Display_URL')}}</code>
 <span style="@{{outputs('Compose_VerdictStyle')}}">@{{outputs('Compose_Verdict')}}</span>
 </div>
 <div style="font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px">@{{outputs('Compose_VerdictReason')}}</div>
 <table style="{TBL}">
-<tr><th style="{TH}">Type</th><td style="{TD}">@{{outputs('Compose_Entity_Kind')}}</td></tr>
 <tr><th style="{TH}">Normalized URL</th><td style="{TD}">@{{outputs('Compose_Display_URL')}}</td></tr>
 <tr><th style="{TH}">Host</th><td style="{TD}"><b>@{{outputs('Compose_URL_Host')}}</b></td></tr>
 </table>
 @{{variables('MDTIHtml')}}
 @{{variables('DefenderHtml')}}
+@{{variables('VTHtml')}}
+@{{variables('SafeBrowsingHtml')}}
+@{{variables('UrlscanHtml')}}
+@{{variables('PhishTankHtml')}}
 <div style="{H4}"><b>Sentinel workspace insights &mdash; last @{{parameters('LookbackDays')}} days</b></div>
 <table style="{TBL}">
 <tr><th style="{TH}">Source</th><th style="{TH}">Detail</th><th style="{TH}">Last seen (UTC)</th></tr>
@@ -373,6 +436,12 @@ definition = {
         "EnableDefenderAdvancedHunting": {"type": "Bool", "defaultValue": True},
         "DefenderLookbackDays": {"type": "Int", "defaultValue": 14},
         "URLContextWatchlistAlias": {"type": "String", "defaultValue": "URLContext"},
+        "VirusTotalApiKey": {"type": "SecureString", "defaultValue": ""},
+        "GoogleSafeBrowsingApiKey": {"type": "SecureString", "defaultValue": ""},
+        "EnableUrlscanSearch": {"type": "Bool", "defaultValue": True},
+        "UrlscanApiKey": {"type": "SecureString", "defaultValue": ""},
+        "EnablePhishTank": {"type": "Bool", "defaultValue": True},
+        "PhishTankAppKey": {"type": "SecureString", "defaultValue": ""},
         "WorkspaceSubscriptionId": {"type": "String"},
         "WorkspaceResourceGroup": {"type": "String"},
         "WorkspaceName": {"type": "String"},
@@ -416,8 +485,56 @@ definition = {
             "runAfter": after("Init_DefenderStatus"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "DefenderHtml", "type": "string", "value": ""}]},
         },
+        "Init_VTJson": {
+            "runAfter": after("Init_DefenderHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "VTJson", "type": "object", "value": {}}]},
+        },
+        "Init_VTStatus": {
+            "runAfter": after("Init_VTJson"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "VTStatus", "type": "string", "value": "skipped, no API key"}]},
+        },
+        "Init_VTHtml": {
+            "runAfter": after("Init_VTStatus"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "VTHtml", "type": "string", "value": ""}]},
+        },
+        "Init_SafeBrowsingJson": {
+            "runAfter": after("Init_VTHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "SafeBrowsingJson", "type": "array", "value": []}]},
+        },
+        "Init_SafeBrowsingStatus": {
+            "runAfter": after("Init_SafeBrowsingJson"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "SafeBrowsingStatus", "type": "string", "value": "skipped, no API key"}]},
+        },
+        "Init_SafeBrowsingHtml": {
+            "runAfter": after("Init_SafeBrowsingStatus"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "SafeBrowsingHtml", "type": "string", "value": ""}]},
+        },
+        "Init_UrlscanJson": {
+            "runAfter": after("Init_SafeBrowsingHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "UrlscanJson", "type": "object", "value": {}}]},
+        },
+        "Init_UrlscanStatus": {
+            "runAfter": after("Init_UrlscanJson"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "UrlscanStatus", "type": "string", "value": "disabled by deployment setting"}]},
+        },
+        "Init_UrlscanHtml": {
+            "runAfter": after("Init_UrlscanStatus"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "UrlscanHtml", "type": "string", "value": ""}]},
+        },
+        "Init_PhishTankJson": {
+            "runAfter": after("Init_UrlscanHtml"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "PhishTankJson", "type": "object", "value": {}}]},
+        },
+        "Init_PhishTankStatus": {
+            "runAfter": after("Init_PhishTankJson"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "PhishTankStatus", "type": "string", "value": "disabled by deployment setting"}]},
+        },
+        "Init_PhishTankHtml": {
+            "runAfter": after("Init_PhishTankStatus"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "PhishTankHtml", "type": "string", "value": ""}]},
+        },
         "Entities_-_Get_URLs": {
-            "runAfter": after("Init_DefenderHtml"), "type": "ApiConnection",
+            "runAfter": after("Init_PhishTankHtml"), "type": "ApiConnection",
             "inputs": {
                 "host": {"connection": {"name": SENTINEL_CONN}},
                 "method": "post",
@@ -425,49 +542,9 @@ definition = {
                 "path": "/entities/url",
             },
         },
-        "Entities_-_Get_Domains": {
-            "runAfter": after("Init_DefenderHtml"), "type": "ApiConnection",
-            "inputs": {
-                "host": {"connection": {"name": SENTINEL_CONN}},
-                "method": "post",
-                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
-                "path": "/entities/dnsresolution",
-            },
-        },
-        "Select_URL_Values": {
-            "runAfter": after("Entities_-_Get_URLs"), "type": "Select",
-            "inputs": {
-                "from": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
-                "select": "@coalesce(item()?['Url'], item()?['url'], '')",
-            },
-        },
-        "Select_Domain_Values": {
-            "runAfter": after("Entities_-_Get_Domains"), "type": "Select",
-            "inputs": {
-                "from": (
-                    "@coalesce(body('Entities_-_Get_Domains')?['DNSResolutions'], "
-                    "body('Entities_-_Get_Domains')?['Domains'], json('[]'))"
-                ),
-                "select": (
-                    "@coalesce(item()?['DomainName'], item()?['domainName'], "
-                    "item()?['Domain'], item()?['domain'], '')"
-                ),
-            },
-        },
-        "Compose_Combined_Targets": {
-            "runAfter": after("Select_URL_Values", "Select_Domain_Values"), "type": "Compose",
-            "inputs": "@union(body('Select_URL_Values'), body('Select_Domain_Values'))",
-        },
-        "Filter_Combined_Targets": {
-            "runAfter": after("Compose_Combined_Targets"), "type": "Query",
-            "inputs": {
-                "from": "@outputs('Compose_Combined_Targets')",
-                "where": "@not(equals(trim(coalesce(item(), '')), ''))",
-            },
-        },
         "For_each_URL_entity": {
-            "foreach": "@body('Filter_Combined_Targets')",
-            "runAfter": after("Filter_Combined_Targets"),
+            "foreach": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
+            "runAfter": after("Entities_-_Get_URLs"),
             "type": "Foreach",
             "runtimeConfiguration": {"concurrency": {"repetitions": 1}},
             "actions": {
@@ -495,11 +572,60 @@ definition = {
                     "runAfter": after("Reset_DefenderStatus"), "type": "SetVariable",
                     "inputs": {"name": "DefenderHtml", "value": ""},
                 },
+                "Reset_VTJson": {
+                    "runAfter": after("Reset_DefenderHtml"), "type": "SetVariable",
+                    "inputs": {"name": "VTJson", "value": {}},
+                },
+                "Reset_VTStatus": {
+                    "runAfter": after("Reset_VTJson"), "type": "SetVariable",
+                    "inputs": {"name": "VTStatus", "value": "skipped, no API key"},
+                },
+                "Reset_VTHtml": {
+                    "runAfter": after("Reset_VTStatus"), "type": "SetVariable",
+                    "inputs": {"name": "VTHtml", "value": ""},
+                },
+                "Reset_SafeBrowsingJson": {
+                    "runAfter": after("Reset_VTHtml"), "type": "SetVariable",
+                    "inputs": {"name": "SafeBrowsingJson", "value": []},
+                },
+                "Reset_SafeBrowsingStatus": {
+                    "runAfter": after("Reset_SafeBrowsingJson"), "type": "SetVariable",
+                    "inputs": {"name": "SafeBrowsingStatus", "value": "skipped, no API key"},
+                },
+                "Reset_SafeBrowsingHtml": {
+                    "runAfter": after("Reset_SafeBrowsingStatus"), "type": "SetVariable",
+                    "inputs": {"name": "SafeBrowsingHtml", "value": ""},
+                },
+                "Reset_UrlscanJson": {
+                    "runAfter": after("Reset_SafeBrowsingHtml"), "type": "SetVariable",
+                    "inputs": {"name": "UrlscanJson", "value": {}},
+                },
+                "Reset_UrlscanStatus": {
+                    "runAfter": after("Reset_UrlscanJson"), "type": "SetVariable",
+                    "inputs": {"name": "UrlscanStatus", "value": "disabled by deployment setting"},
+                },
+                "Reset_UrlscanHtml": {
+                    "runAfter": after("Reset_UrlscanStatus"), "type": "SetVariable",
+                    "inputs": {"name": "UrlscanHtml", "value": ""},
+                },
+                "Reset_PhishTankJson": {
+                    "runAfter": after("Reset_UrlscanHtml"), "type": "SetVariable",
+                    "inputs": {"name": "PhishTankJson", "value": {}},
+                },
+                "Reset_PhishTankStatus": {
+                    "runAfter": after("Reset_PhishTankJson"), "type": "SetVariable",
+                    "inputs": {"name": "PhishTankStatus", "value": "disabled by deployment setting"},
+                },
+                "Reset_PhishTankHtml": {
+                    "runAfter": after("Reset_PhishTankStatus"), "type": "SetVariable",
+                    "inputs": {"name": "PhishTankHtml", "value": ""},
+                },
                 "Compose_Clean_URL": {
-                    "runAfter": after("Reset_DefenderHtml"), "type": "Compose",
+                    "runAfter": after("Reset_PhishTankHtml"), "type": "Compose",
                     "inputs": (
-                        "@replace(replace(replace(trim(string(items('For_each_URL_entity'))), "
-                        "'[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
+                        "@replace(replace(replace(trim(string(coalesce(items('For_each_URL_entity')?['Url'], "
+                        "items('For_each_URL_entity')?['url'], ''))), '[.]', '.'), 'hxxps://', 'https://'), "
+                        "'hxxp://', 'http://')"
                     ),
                 },
                 "Compose_Normalized_URL": {
@@ -521,16 +647,8 @@ definition = {
                     "runAfter": after("Compose_Display_URL"), "type": "Compose",
                     "inputs": "@toLower(uriHost(outputs('Compose_Normalized_URL')))",
                 },
-                "Compose_Entity_Kind": {
-                    "runAfter": after("Compose_URL_Host"), "type": "Compose",
-                    "inputs": (
-                        "@if(or(startsWith(toLower(trim(items('For_each_URL_entity'))), 'http://'), "
-                        "startsWith(toLower(trim(items('For_each_URL_entity'))), 'https://'), "
-                        "contains(items('For_each_URL_entity'), '/')), 'URL', 'Domain')"
-                    ),
-                },
                 "Condition_MDTI_enabled": {
-                    "runAfter": after("Compose_Entity_Kind"), "type": "If",
+                    "runAfter": after("Compose_URL_Host"), "type": "If",
                     "expression": {"and": [{"equals": ["@parameters('EnableMicrosoftThreatIntelligence')", True]}]},
                     "actions": {
                         "HTTP_MDTI_Host": graph_get("HTTP_MDTI_Host", ""),
@@ -642,8 +760,248 @@ definition = {
                         }
                     },
                 },
+                "Condition_VirusTotal_key_present": {
+                    "runAfter": after("Condition_Defender_XDR_enabled"), "type": "If",
+                    "expression": {"and": [{"not": {"equals": ["@parameters('VirusTotalApiKey')", ""]}}]},
+                    "actions": {
+                        "Compose_VT_URL_Id": {
+                            "runAfter": {}, "type": "Compose",
+                            "inputs": (
+                                "@replace(replace(replace(base64(outputs('Compose_Normalized_URL')), "
+                                "'+', '-'), '/', '_'), '=', '')"
+                            ),
+                        },
+                        "HTTP_VirusTotal": {
+                            "runAfter": after("Compose_VT_URL_Id"), "type": "Http",
+                            "inputs": {
+                                "method": "GET",
+                                "uri": "@{concat('https://www.virustotal.com/api/v3/urls/', outputs('Compose_VT_URL_Id'))}",
+                                "headers": {"x-apikey": "@parameters('VirusTotalApiKey')"},
+                            },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
+                        },
+                        "Set_VTJson": {
+                            "runAfter": after("HTTP_VirusTotal", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "VTJson",
+                                "value": (
+                                    "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), "
+                                    "coalesce(body('HTTP_VirusTotal')?['data']?['attributes'], json('{}')), json('{}'))"
+                                ),
+                            },
+                        },
+                        "Set_VTStatus": {
+                            "runAfter": after("Set_VTJson"), "type": "SetVariable",
+                            "inputs": {
+                                "name": "VTStatus",
+                                "value": (
+                                    "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), "
+                                    "concat('available; ', string(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0)), ' malicious of ', "
+                                    "string(add(add(add(add(int(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0)), "
+                                    "int(coalesce(variables('VTJson')?['last_analysis_stats']?['suspicious'], 0))), "
+                                    "int(coalesce(variables('VTJson')?['last_analysis_stats']?['harmless'], 0))), "
+                                    "int(coalesce(variables('VTJson')?['last_analysis_stats']?['undetected'], 0))), 0)), ' engines'), "
+                                    "concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_VirusTotal')?['statusCode'], 'no response')), ')'))"
+                                ),
+                            },
+                        },
+                        "Set_VTHtml": {
+                            "runAfter": after("Set_VTStatus"), "type": "SetVariable",
+                            "inputs": {"name": "VTHtml", "value": VT_BLOCK},
+                        },
+                    },
+                    "else": {
+                        "actions": {
+                            "Set_VTHtml_disabled": {
+                                "runAfter": {}, "type": "SetVariable",
+                                "inputs": {"name": "VTHtml", "value": VT_DISABLED_BLOCK},
+                            }
+                        }
+                    },
+                },
+                "Condition_SafeBrowsing_key_present": {
+                    "runAfter": after("Condition_VirusTotal_key_present"), "type": "If",
+                    "expression": {"and": [{"not": {"equals": ["@parameters('GoogleSafeBrowsingApiKey')", ""]}}]},
+                    "actions": {
+                        "HTTP_SafeBrowsing": {
+                            "runAfter": {}, "type": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "uri": "@{concat('https://safebrowsing.googleapis.com/v4/threatMatches:find?key=', parameters('GoogleSafeBrowsingApiKey'))}",
+                                "headers": {"Content-Type": "application/json; charset=utf-8"},
+                                "body": {
+                                    "client": {"clientId": "sentinel-url-enrichment", "clientVersion": "1.0"},
+                                    "threatInfo": {
+                                        "threatTypes": [
+                                            "MALWARE", "SOCIAL_ENGINEERING",
+                                            "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION",
+                                        ],
+                                        "platformTypes": ["ANY_PLATFORM"],
+                                        "threatEntryTypes": ["URL"],
+                                        "threatEntries": [{"url": "@{outputs('Compose_Normalized_URL')}"}],
+                                    },
+                                },
+                            },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
+                        },
+                        "Set_SafeBrowsingJson": {
+                            "runAfter": after("HTTP_SafeBrowsing", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "SafeBrowsingJson",
+                                "value": (
+                                    "@if(equals(outputs('HTTP_SafeBrowsing')?['statusCode'], 200), "
+                                    "coalesce(body('HTTP_SafeBrowsing')?['matches'], json('[]')), json('[]'))"
+                                ),
+                            },
+                        },
+                        "Set_SafeBrowsingStatus": {
+                            "runAfter": after("Set_SafeBrowsingJson"), "type": "SetVariable",
+                            "inputs": {
+                                "name": "SafeBrowsingStatus",
+                                "value": (
+                                    "@if(not(equals(outputs('HTTP_SafeBrowsing')?['statusCode'], 200)), "
+                                    "concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_SafeBrowsing')?['statusCode'], 'no response')), ')'), "
+                                    "if(greater(length(variables('SafeBrowsingJson')), 0), 'available; threat match found', 'available; no match'))"
+                                ),
+                            },
+                        },
+                        "Set_SafeBrowsingHtml": {
+                            "runAfter": after("Set_SafeBrowsingStatus"), "type": "SetVariable",
+                            "inputs": {"name": "SafeBrowsingHtml", "value": SAFEBROWSING_BLOCK},
+                        },
+                    },
+                    "else": {
+                        "actions": {
+                            "Set_SafeBrowsingHtml_disabled": {
+                                "runAfter": {}, "type": "SetVariable",
+                                "inputs": {"name": "SafeBrowsingHtml", "value": SAFEBROWSING_DISABLED_BLOCK},
+                            }
+                        }
+                    },
+                },
+                "Condition_Urlscan_enabled": {
+                    "runAfter": after("Condition_SafeBrowsing_key_present"), "type": "If",
+                    "expression": {"and": [{"equals": ["@parameters('EnableUrlscanSearch')", True]}]},
+                    "actions": {
+                        "HTTP_Urlscan": {
+                            "runAfter": {}, "type": "Http",
+                            "inputs": {
+                                "method": "GET",
+                                "uri": "@{concat('https://urlscan.io/api/v1/search/?q=domain:%22', outputs('Compose_URL_Host'), '%22&size=10')}",
+                                "headers": {"API-Key": "@parameters('UrlscanApiKey')", "Accept": "application/json"},
+                            },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
+                        },
+                        "Compose_Urlscan_Results": {
+                            "runAfter": after("HTTP_Urlscan", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "Compose",
+                            "inputs": (
+                                "@if(equals(outputs('HTTP_Urlscan')?['statusCode'], 200), "
+                                "coalesce(body('HTTP_Urlscan')?['results'], json('[]')), json('[]'))"
+                            ),
+                        },
+                        "Filter_Urlscan_Malicious": {
+                            "runAfter": after("Compose_Urlscan_Results"), "type": "Query",
+                            "inputs": {
+                                "from": "@outputs('Compose_Urlscan_Results')",
+                                "where": "@equals(item()?['verdicts']?['overall']?['malicious'], true)",
+                            },
+                        },
+                        "Set_UrlscanJson": {
+                            "runAfter": after("Filter_Urlscan_Malicious"), "type": "SetVariable",
+                            "inputs": {
+                                "name": "UrlscanJson",
+                                "value": {
+                                    "Total": "@length(outputs('Compose_Urlscan_Results'))",
+                                    "MaliciousCount": "@length(body('Filter_Urlscan_Malicious'))",
+                                    "First": "@if(greater(length(outputs('Compose_Urlscan_Results')), 0), first(outputs('Compose_Urlscan_Results')), json('{}'))",
+                                },
+                            },
+                        },
+                        "Set_UrlscanStatus": {
+                            "runAfter": after("Set_UrlscanJson"), "type": "SetVariable",
+                            "inputs": {
+                                "name": "UrlscanStatus",
+                                "value": (
+                                    "@if(not(equals(outputs('HTTP_Urlscan')?['statusCode'], 200)), "
+                                    "concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_Urlscan')?['statusCode'], 'no response')), ')'), "
+                                    "if(greater(int(coalesce(variables('UrlscanJson')?['Total'], 0)), 0), 'available; prior scans found', 'available; no prior scans'))"
+                                ),
+                            },
+                        },
+                        "Set_UrlscanHtml": {
+                            "runAfter": after("Set_UrlscanStatus"), "type": "SetVariable",
+                            "inputs": {"name": "UrlscanHtml", "value": URLSCAN_BLOCK},
+                        },
+                    },
+                    "else": {
+                        "actions": {
+                            "Set_UrlscanHtml_disabled": {
+                                "runAfter": {}, "type": "SetVariable",
+                                "inputs": {"name": "UrlscanHtml", "value": URLSCAN_DISABLED_BLOCK},
+                            }
+                        }
+                    },
+                },
+                "Condition_PhishTank_enabled": {
+                    "runAfter": after("Condition_Urlscan_enabled"), "type": "If",
+                    "expression": {"and": [{"equals": ["@parameters('EnablePhishTank')", True]}]},
+                    "actions": {
+                        "HTTP_PhishTank": {
+                            "runAfter": {}, "type": "Http",
+                            "inputs": {
+                                "method": "POST",
+                                "uri": "https://checkurl.phishtank.com/checkurl/",
+                                "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+                                "body": (
+                                    "@{concat('url=', uriComponent(outputs('Compose_Normalized_URL')), '&format=json', "
+                                    "if(equals(parameters('PhishTankAppKey'), ''), '', "
+                                    "concat('&app_key=', parameters('PhishTankAppKey'))))}"
+                                ),
+                            },
+                            "runtimeConfiguration": {"secureData": {"properties": ["inputs"]}},
+                        },
+                        "Set_PhishTankJson": {
+                            "runAfter": after("HTTP_PhishTank", states=("Succeeded", "Failed", "TimedOut")),
+                            "type": "SetVariable",
+                            "inputs": {
+                                "name": "PhishTankJson",
+                                "value": (
+                                    "@if(equals(outputs('HTTP_PhishTank')?['statusCode'], 200), "
+                                    "coalesce(body('HTTP_PhishTank')?['results'], json('{}')), json('{}'))"
+                                ),
+                            },
+                        },
+                        "Set_PhishTankStatus": {
+                            "runAfter": after("Set_PhishTankJson"), "type": "SetVariable",
+                            "inputs": {
+                                "name": "PhishTankStatus",
+                                "value": (
+                                    "@if(not(equals(outputs('HTTP_PhishTank')?['statusCode'], 200)), "
+                                    "concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_PhishTank')?['statusCode'], 'no response')), ')'), "
+                                    "if(equals(toLower(string(coalesce(variables('PhishTankJson')?['in_database'], false))), 'true'), "
+                                    "'available; in database', 'available; not in database'))"
+                                ),
+                            },
+                        },
+                        "Set_PhishTankHtml": {
+                            "runAfter": after("Set_PhishTankStatus"), "type": "SetVariable",
+                            "inputs": {"name": "PhishTankHtml", "value": PHISHTANK_BLOCK},
+                        },
+                    },
+                    "else": {
+                        "actions": {
+                            "Set_PhishTankHtml_disabled": {
+                                "runAfter": {}, "type": "SetVariable",
+                                "inputs": {"name": "PhishTankHtml", "value": PHISHTANK_DISABLED_BLOCK},
+                            }
+                        }
+                    },
+                },
                 "Run_KQL_workspace_context": {
-                    "runAfter": after("Condition_Defender_XDR_enabled"), "type": "ApiConnection",
+                    "runAfter": after("Condition_PhishTank_enabled"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": LA_CONN}},
                         "method": "post",
@@ -705,7 +1063,7 @@ definition = {
         },
         "Condition_any_URL_entities": {
             "runAfter": after("For_each_URL_entity"), "type": "If",
-            "expression": {"and": [{"greater": ["@length(body('Filter_Combined_Targets'))", 0]}]},
+            "expression": {"and": [{"greater": ["@length(coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]')))", 0]}]},
             "actions": {
                 "Add_comment_to_incident_V3": {
                     "runAfter": {}, "type": "ApiConnection",
@@ -731,19 +1089,23 @@ template = {
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
     "contentVersion": "1.0.0.0",
     "metadata": {
-        "title": "Enrich URL and Domain entities and post a Sentinel incident comment",
-        "description": "For each URL or DNS-resolution Domain entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment per entity.",
-        "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting.",
+        "title": "Enrich URL entities and post a Sentinel incident comment",
+        "description": "For each URL entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, optionally queries VirusTotal, Google Safe Browsing, urlscan.io and PhishTank for community/vendor reputation, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment.",
+        "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting. VirusTotal and Google Safe Browsing are optional and need their own API keys; urlscan.io and PhishTank work without a key.",
         "postDeployment": [
             "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
             "Grant the same identity Log Analytics Reader on the workspace.",
             "Grant the managed identity Microsoft Graph application permissions ThreatIntelligence.Read.All and ThreatHunting.Read.All using app-role assignments, then allow time for token propagation.",
             "Authorise the Microsoft Sentinel and Azure Monitor Logs API connections.",
+            "Optionally supply a VirusTotal Premium key and/or a Google Safe Browsing key at deployment to enable those sources.",
             "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident.",
         ],
         "lastUpdateTime": "2026-09-01",
-        "entities": ["Url", "DNSResolution"],
-        "tags": ["Enrichment", "URL", "Domain", "Microsoft Threat Intelligence", "Defender XDR"],
+        "entities": ["Url"],
+        "tags": [
+            "Enrichment", "URL", "Microsoft Threat Intelligence", "Defender XDR",
+            "VirusTotal", "Google Safe Browsing", "urlscan.io", "PhishTank",
+        ],
         "support": {"tier": "community"},
     },
     "parameters": {
@@ -785,6 +1147,30 @@ template = {
         "URLContextWatchlistAlias": {
             "type": "string", "defaultValue": "URLContext",
             "metadata": {"description": "Optional client URL/domain watchlist alias. Set blank to disable."},
+        },
+        "VirusTotalApiKey": {
+            "type": "securestring", "defaultValue": "",
+            "metadata": {"description": "Optional VirusTotal API key. Leave blank to skip. The free public API forbids business-workflow use, so supply a Premium key."},
+        },
+        "GoogleSafeBrowsingApiKey": {
+            "type": "securestring", "defaultValue": "",
+            "metadata": {"description": "Optional Google Safe Browsing v4 API key (free, from Google Cloud Console). Leave blank to skip."},
+        },
+        "EnableUrlscanSearch": {
+            "type": "bool", "defaultValue": True,
+            "metadata": {"description": "Search urlscan.io for prior public scans of the URL's host. Free, no key required; a key only raises the rate limit."},
+        },
+        "UrlscanApiKey": {
+            "type": "securestring", "defaultValue": "",
+            "metadata": {"description": "Optional urlscan.io API key to raise the search rate limit. Leave blank to use the unauthenticated limit."},
+        },
+        "EnablePhishTank": {
+            "type": "bool", "defaultValue": True,
+            "metadata": {"description": "Check the URL against PhishTank's phishing verification database."},
+        },
+        "PhishTankAppKey": {
+            "type": "securestring", "defaultValue": "",
+            "metadata": {"description": "Optional PhishTank application key to raise the rate limit. Leave blank to use the unauthenticated limit."},
         },
     },
     "variables": {
@@ -852,6 +1238,12 @@ template = {
                     "EnableDefenderAdvancedHunting": {"value": "[parameters('EnableDefenderAdvancedHunting')]"},
                     "DefenderLookbackDays": {"value": "[parameters('DefenderLookbackDays')]"},
                     "URLContextWatchlistAlias": {"value": "[parameters('URLContextWatchlistAlias')]"},
+                    "VirusTotalApiKey": {"value": "[parameters('VirusTotalApiKey')]"},
+                    "GoogleSafeBrowsingApiKey": {"value": "[parameters('GoogleSafeBrowsingApiKey')]"},
+                    "EnableUrlscanSearch": {"value": "[parameters('EnableUrlscanSearch')]"},
+                    "UrlscanApiKey": {"value": "[parameters('UrlscanApiKey')]"},
+                    "EnablePhishTank": {"value": "[parameters('EnablePhishTank')]"},
+                    "PhishTankAppKey": {"value": "[parameters('PhishTankAppKey')]"},
                     "WorkspaceSubscriptionId": {"value": "[parameters('WorkspaceSubscriptionId')]"},
                     "WorkspaceResourceGroup": {"value": "[parameters('WorkspaceResourceGroup')]"},
                     "WorkspaceName": {"value": "[parameters('WorkspaceName')]"},

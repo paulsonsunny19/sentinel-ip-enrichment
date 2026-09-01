@@ -2,27 +2,30 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "title": "Enrich URL and Domain entities and post a Sentinel incident comment",
-    "description": "For each URL or DNS-resolution Domain entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment per entity.",
-    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting.",
+    "title": "Enrich URL entities and post a Sentinel incident comment",
+    "description": "For each URL entity on a Microsoft Sentinel incident, extracts and normalizes the host, queries Microsoft Threat Intelligence through Microsoft Graph for reputation, attributed rules and reports, WHOIS, passive DNS, trackers, cookies and web components, queries Defender XDR Advanced Hunting for Safe Links clicks, email references, device connections and alert evidence, optionally queries VirusTotal, Google Safe Browsing, urlscan.io and PhishTank for community/vendor reputation, searches Sentinel workspace telemetry and client context, calculates a triage verdict, and posts one formatted incident comment.",
+    "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace and one existing user-assigned managed identity. Microsoft Graph application permission ThreatIntelligence.Read.All is required for MDTI and ThreatHunting.Read.All is required for Defender Advanced Hunting. VirusTotal and Google Safe Browsing are optional and need their own API keys; urlscan.io and PhishTank work without a key.",
     "postDeployment": [
       "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
       "Grant the same identity Log Analytics Reader on the workspace.",
       "Grant the managed identity Microsoft Graph application permissions ThreatIntelligence.Read.All and ThreatHunting.Read.All using app-role assignments, then allow time for token propagation.",
       "Authorise the Microsoft Sentinel and Azure Monitor Logs API connections.",
+      "Optionally supply a VirusTotal Premium key and/or a Google Safe Browsing key at deployment to enable those sources.",
       "Attach the playbook to a Sentinel incident automation rule, or run it on demand from an incident."
     ],
     "lastUpdateTime": "2026-09-01",
     "entities": [
-      "Url",
-      "DNSResolution"
+      "Url"
     ],
     "tags": [
       "Enrichment",
       "URL",
-      "Domain",
       "Microsoft Threat Intelligence",
-      "Defender XDR"
+      "Defender XDR",
+      "VirusTotal",
+      "Google Safe Browsing",
+      "urlscan.io",
+      "PhishTank"
     ],
     "support": {
       "tier": "community"
@@ -100,6 +103,48 @@
       "defaultValue": "URLContext",
       "metadata": {
         "description": "Optional client URL/domain watchlist alias. Set blank to disable."
+      }
+    },
+    "VirusTotalApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional VirusTotal API key. Leave blank to skip. The free public API forbids business-workflow use, so supply a Premium key."
+      }
+    },
+    "GoogleSafeBrowsingApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Google Safe Browsing v4 API key (free, from Google Cloud Console). Leave blank to skip."
+      }
+    },
+    "EnableUrlscanSearch": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Search urlscan.io for prior public scans of the URL's host. Free, no key required; a key only raises the rate limit."
+      }
+    },
+    "UrlscanApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional urlscan.io API key to raise the search rate limit. Leave blank to use the unauthenticated limit."
+      }
+    },
+    "EnablePhishTank": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Check the URL against PhishTank's phishing verification database."
+      }
+    },
+    "PhishTankAppKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional PhishTank application key to raise the rate limit. Leave blank to use the unauthenticated limit."
       }
     }
   },
@@ -189,6 +234,30 @@
             "URLContextWatchlistAlias": {
               "type": "String",
               "defaultValue": "URLContext"
+            },
+            "VirusTotalApiKey": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "GoogleSafeBrowsingApiKey": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "EnableUrlscanSearch": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "UrlscanApiKey": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "EnablePhishTank": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "PhishTankAppKey": {
+              "type": "SecureString",
+              "defaultValue": ""
             },
             "WorkspaceSubscriptionId": {
               "type": "String"
@@ -332,9 +401,213 @@
                 ]
               }
             },
-            "Entities_-_Get_URLs": {
+            "Init_VTJson": {
               "runAfter": {
                 "Init_DefenderHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "VTJson",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_VTStatus": {
+              "runAfter": {
+                "Init_VTJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "VTStatus",
+                    "type": "string",
+                    "value": "skipped, no API key"
+                  }
+                ]
+              }
+            },
+            "Init_VTHtml": {
+              "runAfter": {
+                "Init_VTStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "VTHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_SafeBrowsingJson": {
+              "runAfter": {
+                "Init_VTHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "SafeBrowsingJson",
+                    "type": "array",
+                    "value": []
+                  }
+                ]
+              }
+            },
+            "Init_SafeBrowsingStatus": {
+              "runAfter": {
+                "Init_SafeBrowsingJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "SafeBrowsingStatus",
+                    "type": "string",
+                    "value": "skipped, no API key"
+                  }
+                ]
+              }
+            },
+            "Init_SafeBrowsingHtml": {
+              "runAfter": {
+                "Init_SafeBrowsingStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "SafeBrowsingHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_UrlscanJson": {
+              "runAfter": {
+                "Init_SafeBrowsingHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "UrlscanJson",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_UrlscanStatus": {
+              "runAfter": {
+                "Init_UrlscanJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "UrlscanStatus",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_UrlscanHtml": {
+              "runAfter": {
+                "Init_UrlscanStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "UrlscanHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_PhishTankJson": {
+              "runAfter": {
+                "Init_UrlscanHtml": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "PhishTankJson",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              }
+            },
+            "Init_PhishTankStatus": {
+              "runAfter": {
+                "Init_PhishTankJson": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "PhishTankStatus",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_PhishTankHtml": {
+              "runAfter": {
+                "Init_PhishTankStatus": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "PhishTankHtml",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_URLs": {
+              "runAfter": {
+                "Init_PhishTankHtml": [
                   "Succeeded"
                 ]
               },
@@ -350,76 +623,10 @@
                 "path": "/entities/url"
               }
             },
-            "Entities_-_Get_Domains": {
-              "runAfter": {
-                "Init_DefenderHtml": [
-                  "Succeeded"
-                ]
-              },
-              "type": "ApiConnection",
-              "inputs": {
-                "host": {
-                  "connection": {
-                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
-                  }
-                },
-                "method": "post",
-                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
-                "path": "/entities/dnsresolution"
-              }
-            },
-            "Select_URL_Values": {
+            "For_each_URL_entity": {
+              "foreach": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
               "runAfter": {
                 "Entities_-_Get_URLs": [
-                  "Succeeded"
-                ]
-              },
-              "type": "Select",
-              "inputs": {
-                "from": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
-                "select": "@coalesce(item()?['Url'], item()?['url'], '')"
-              }
-            },
-            "Select_Domain_Values": {
-              "runAfter": {
-                "Entities_-_Get_Domains": [
-                  "Succeeded"
-                ]
-              },
-              "type": "Select",
-              "inputs": {
-                "from": "@coalesce(body('Entities_-_Get_Domains')?['DNSResolutions'], body('Entities_-_Get_Domains')?['Domains'], json('[]'))",
-                "select": "@coalesce(item()?['DomainName'], item()?['domainName'], item()?['Domain'], item()?['domain'], '')"
-              }
-            },
-            "Compose_Combined_Targets": {
-              "runAfter": {
-                "Select_URL_Values": [
-                  "Succeeded"
-                ],
-                "Select_Domain_Values": [
-                  "Succeeded"
-                ]
-              },
-              "type": "Compose",
-              "inputs": "@union(body('Select_URL_Values'), body('Select_Domain_Values'))"
-            },
-            "Filter_Combined_Targets": {
-              "runAfter": {
-                "Compose_Combined_Targets": [
-                  "Succeeded"
-                ]
-              },
-              "type": "Query",
-              "inputs": {
-                "from": "@outputs('Compose_Combined_Targets')",
-                "where": "@not(equals(trim(coalesce(item(), '')), ''))"
-              }
-            },
-            "For_each_URL_entity": {
-              "foreach": "@body('Filter_Combined_Targets')",
-              "runAfter": {
-                "Filter_Combined_Targets": [
                   "Succeeded"
                 ]
               },
@@ -498,14 +705,158 @@
                     "value": ""
                   }
                 },
-                "Compose_Clean_URL": {
+                "Reset_VTJson": {
                   "runAfter": {
                     "Reset_DefenderHtml": [
                       "Succeeded"
                     ]
                   },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "VTJson",
+                    "value": {}
+                  }
+                },
+                "Reset_VTStatus": {
+                  "runAfter": {
+                    "Reset_VTJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "VTStatus",
+                    "value": "skipped, no API key"
+                  }
+                },
+                "Reset_VTHtml": {
+                  "runAfter": {
+                    "Reset_VTStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "VTHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_SafeBrowsingJson": {
+                  "runAfter": {
+                    "Reset_VTHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "SafeBrowsingJson",
+                    "value": []
+                  }
+                },
+                "Reset_SafeBrowsingStatus": {
+                  "runAfter": {
+                    "Reset_SafeBrowsingJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "SafeBrowsingStatus",
+                    "value": "skipped, no API key"
+                  }
+                },
+                "Reset_SafeBrowsingHtml": {
+                  "runAfter": {
+                    "Reset_SafeBrowsingStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "SafeBrowsingHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_UrlscanJson": {
+                  "runAfter": {
+                    "Reset_SafeBrowsingHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "UrlscanJson",
+                    "value": {}
+                  }
+                },
+                "Reset_UrlscanStatus": {
+                  "runAfter": {
+                    "Reset_UrlscanJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "UrlscanStatus",
+                    "value": "disabled by deployment setting"
+                  }
+                },
+                "Reset_UrlscanHtml": {
+                  "runAfter": {
+                    "Reset_UrlscanStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "UrlscanHtml",
+                    "value": ""
+                  }
+                },
+                "Reset_PhishTankJson": {
+                  "runAfter": {
+                    "Reset_UrlscanHtml": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "PhishTankJson",
+                    "value": {}
+                  }
+                },
+                "Reset_PhishTankStatus": {
+                  "runAfter": {
+                    "Reset_PhishTankJson": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "PhishTankStatus",
+                    "value": "disabled by deployment setting"
+                  }
+                },
+                "Reset_PhishTankHtml": {
+                  "runAfter": {
+                    "Reset_PhishTankStatus": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "PhishTankHtml",
+                    "value": ""
+                  }
+                },
+                "Compose_Clean_URL": {
+                  "runAfter": {
+                    "Reset_PhishTankHtml": [
+                      "Succeeded"
+                    ]
+                  },
                   "type": "Compose",
-                  "inputs": "@replace(replace(replace(trim(string(items('For_each_URL_entity'))), '[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
+                  "inputs": "@replace(replace(replace(trim(string(coalesce(items('For_each_URL_entity')?['Url'], items('For_each_URL_entity')?['url'], ''))), '[.]', '.'), 'hxxps://', 'https://'), 'hxxp://', 'http://')"
                 },
                 "Compose_Normalized_URL": {
                   "runAfter": {
@@ -534,18 +885,9 @@
                   "type": "Compose",
                   "inputs": "@toLower(uriHost(outputs('Compose_Normalized_URL')))"
                 },
-                "Compose_Entity_Kind": {
-                  "runAfter": {
-                    "Compose_URL_Host": [
-                      "Succeeded"
-                    ]
-                  },
-                  "type": "Compose",
-                  "inputs": "@if(or(startsWith(toLower(trim(items('For_each_URL_entity'))), 'http://'), startsWith(toLower(trim(items('For_each_URL_entity'))), 'https://'), contains(items('For_each_URL_entity'), '/')), 'URL', 'Domain')"
-                },
                 "Condition_MDTI_enabled": {
                   "runAfter": {
-                    "Compose_Entity_Kind": [
+                    "Compose_URL_Host": [
                       "Succeeded"
                     ]
                   },
@@ -912,9 +1254,426 @@
                     }
                   }
                 },
-                "Run_KQL_workspace_context": {
+                "Condition_VirusTotal_key_present": {
                   "runAfter": {
                     "Condition_Defender_XDR_enabled": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('VirusTotalApiKey')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Compose_VT_URL_Id": {
+                      "runAfter": {},
+                      "type": "Compose",
+                      "inputs": "@replace(replace(replace(base64(outputs('Compose_Normalized_URL')), '+', '-'), '/', '_'), '=', '')"
+                    },
+                    "HTTP_VirusTotal": {
+                      "runAfter": {
+                        "Compose_VT_URL_Id": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://www.virustotal.com/api/v3/urls/', outputs('Compose_VT_URL_Id'))}",
+                        "headers": {
+                          "x-apikey": "@parameters('VirusTotalApiKey')"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_VTJson": {
+                      "runAfter": {
+                        "HTTP_VirusTotal": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "VTJson",
+                        "value": "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), coalesce(body('HTTP_VirusTotal')?['data']?['attributes'], json('{}')), json('{}'))"
+                      }
+                    },
+                    "Set_VTStatus": {
+                      "runAfter": {
+                        "Set_VTJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "VTStatus",
+                        "value": "@if(equals(outputs('HTTP_VirusTotal')?['statusCode'], 200), concat('available; ', string(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0)), ' malicious of ', string(add(add(add(add(int(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0)), int(coalesce(variables('VTJson')?['last_analysis_stats']?['suspicious'], 0))), int(coalesce(variables('VTJson')?['last_analysis_stats']?['harmless'], 0))), int(coalesce(variables('VTJson')?['last_analysis_stats']?['undetected'], 0))), 0)), ' engines'), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_VirusTotal')?['statusCode'], 'no response')), ')'))"
+                      }
+                    },
+                    "Set_VTHtml": {
+                      "runAfter": {
+                        "Set_VTStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "VTHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>VirusTotal</b> <span style=\"font-weight:400;color:#605e5c\">(community engine consensus)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{variables('VTStatus')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Link</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://www.virustotal.com/gui/url/@{outputs('Compose_VT_URL_Id')}\">open in VirusTotal</a></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detections</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">malicious: <b>@{string(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0))}</b> &nbsp;|&nbsp; suspicious: @{string(coalesce(variables('VTJson')?['last_analysis_stats']?['suspicious'], 0))} &nbsp;|&nbsp; harmless: @{string(coalesce(variables('VTJson')?['last_analysis_stats']?['harmless'], 0))} &nbsp;|&nbsp; undetected: @{string(coalesce(variables('VTJson')?['last_analysis_stats']?['undetected'], 0))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Reputation</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('VTJson')?['reputation'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Categories</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('VTJson')?['categories'], json('{}')))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_VTHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "VTHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>VirusTotal</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Skipped &mdash; no API key supplied at deployment. The free public API forbids business-workflow use; supply a Premium key to enable.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Condition_SafeBrowsing_key_present": {
+                  "runAfter": {
+                    "Condition_VirusTotal_key_present": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('GoogleSafeBrowsingApiKey')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_SafeBrowsing": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "@{concat('https://safebrowsing.googleapis.com/v4/threatMatches:find?key=', parameters('GoogleSafeBrowsingApiKey'))}",
+                        "headers": {
+                          "Content-Type": "application/json; charset=utf-8"
+                        },
+                        "body": {
+                          "client": {
+                            "clientId": "sentinel-url-enrichment",
+                            "clientVersion": "1.0"
+                          },
+                          "threatInfo": {
+                            "threatTypes": [
+                              "MALWARE",
+                              "SOCIAL_ENGINEERING",
+                              "UNWANTED_SOFTWARE",
+                              "POTENTIALLY_HARMFUL_APPLICATION"
+                            ],
+                            "platformTypes": [
+                              "ANY_PLATFORM"
+                            ],
+                            "threatEntryTypes": [
+                              "URL"
+                            ],
+                            "threatEntries": [
+                              {
+                                "url": "@{outputs('Compose_Normalized_URL')}"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_SafeBrowsingJson": {
+                      "runAfter": {
+                        "HTTP_SafeBrowsing": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "SafeBrowsingJson",
+                        "value": "@if(equals(outputs('HTTP_SafeBrowsing')?['statusCode'], 200), coalesce(body('HTTP_SafeBrowsing')?['matches'], json('[]')), json('[]'))"
+                      }
+                    },
+                    "Set_SafeBrowsingStatus": {
+                      "runAfter": {
+                        "Set_SafeBrowsingJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "SafeBrowsingStatus",
+                        "value": "@if(not(equals(outputs('HTTP_SafeBrowsing')?['statusCode'], 200)), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_SafeBrowsing')?['statusCode'], 'no response')), ')'), if(greater(length(variables('SafeBrowsingJson')), 0), 'available; threat match found', 'available; no match'))"
+                      }
+                    },
+                    "Set_SafeBrowsingHtml": {
+                      "runAfter": {
+                        "Set_SafeBrowsingStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "SafeBrowsingHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Google Safe Browsing</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{variables('SafeBrowsingStatus')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Matches</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\"><b>@{string(length(variables('SafeBrowsingJson')))}</b> threat match(es): @{string(variables('SafeBrowsingJson'))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_SafeBrowsingHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "SafeBrowsingHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Google Safe Browsing</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Skipped &mdash; no API key supplied at deployment.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Condition_Urlscan_enabled": {
+                  "runAfter": {
+                    "Condition_SafeBrowsing_key_present": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnableUrlscanSearch')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Urlscan": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://urlscan.io/api/v1/search/?q=domain:%22', outputs('Compose_URL_Host'), '%22&size=10')}",
+                        "headers": {
+                          "API-Key": "@parameters('UrlscanApiKey')",
+                          "Accept": "application/json"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Compose_Urlscan_Results": {
+                      "runAfter": {
+                        "HTTP_Urlscan": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(equals(outputs('HTTP_Urlscan')?['statusCode'], 200), coalesce(body('HTTP_Urlscan')?['results'], json('[]')), json('[]'))"
+                    },
+                    "Filter_Urlscan_Malicious": {
+                      "runAfter": {
+                        "Compose_Urlscan_Results": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Query",
+                      "inputs": {
+                        "from": "@outputs('Compose_Urlscan_Results')",
+                        "where": "@equals(item()?['verdicts']?['overall']?['malicious'], true)"
+                      }
+                    },
+                    "Set_UrlscanJson": {
+                      "runAfter": {
+                        "Filter_Urlscan_Malicious": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "UrlscanJson",
+                        "value": {
+                          "Total": "@length(outputs('Compose_Urlscan_Results'))",
+                          "MaliciousCount": "@length(body('Filter_Urlscan_Malicious'))",
+                          "First": "@if(greater(length(outputs('Compose_Urlscan_Results')), 0), first(outputs('Compose_Urlscan_Results')), json('{}'))"
+                        }
+                      }
+                    },
+                    "Set_UrlscanStatus": {
+                      "runAfter": {
+                        "Set_UrlscanJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "UrlscanStatus",
+                        "value": "@if(not(equals(outputs('HTTP_Urlscan')?['statusCode'], 200)), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_Urlscan')?['statusCode'], 'no response')), ')'), if(greater(int(coalesce(variables('UrlscanJson')?['Total'], 0)), 0), 'available; prior scans found', 'available; no prior scans'))"
+                      }
+                    },
+                    "Set_UrlscanHtml": {
+                      "runAfter": {
+                        "Set_UrlscanStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "UrlscanHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>urlscan.io</b> <span style=\"font-weight:400;color:#605e5c\">(prior public scans)</span></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{variables('UrlscanStatus')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Search</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><a href=\"https://urlscan.io/search/#domain:@{outputs('Compose_URL_Host')}\">open in urlscan.io</a></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Results</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\"><b>@{string(coalesce(variables('UrlscanJson')?['Total'], 0))}</b> scan(s) found &nbsp;|&nbsp; <b>@{string(coalesce(variables('UrlscanJson')?['MaliciousCount'], 0))} flagged malicious</b></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Most recent scan</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">@{string(coalesce(variables('UrlscanJson')?['First']?['page']?['url'], 'n/a'))} &nbsp;|&nbsp; IP: @{string(coalesce(variables('UrlscanJson')?['First']?['page']?['ip'], 'n/a'))} &nbsp;|&nbsp; ASN: @{string(coalesce(variables('UrlscanJson')?['First']?['page']?['asn'], 'n/a'))} @{string(coalesce(variables('UrlscanJson')?['First']?['page']?['asnname'], ''))} &nbsp;|&nbsp; country: @{string(coalesce(variables('UrlscanJson')?['First']?['page']?['country'], 'n/a'))}</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_UrlscanHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "UrlscanHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>urlscan.io</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Disabled by deployment setting.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Condition_PhishTank_enabled": {
+                  "runAfter": {
+                    "Condition_Urlscan_enabled": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('EnablePhishTank')",
+                          true
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_PhishTank": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://checkurl.phishtank.com/checkurl/",
+                        "headers": {
+                          "Content-Type": "application/x-www-form-urlencoded"
+                        },
+                        "body": "@{concat('url=', uriComponent(outputs('Compose_Normalized_URL')), '&format=json', if(equals(parameters('PhishTankAppKey'), ''), '', concat('&app_key=', parameters('PhishTankAppKey'))))}"
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_PhishTankJson": {
+                      "runAfter": {
+                        "HTTP_PhishTank": [
+                          "Succeeded",
+                          "Failed",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "PhishTankJson",
+                        "value": "@if(equals(outputs('HTTP_PhishTank')?['statusCode'], 200), coalesce(body('HTTP_PhishTank')?['results'], json('{}')), json('{}'))"
+                      }
+                    },
+                    "Set_PhishTankStatus": {
+                      "runAfter": {
+                        "Set_PhishTankJson": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "PhishTankStatus",
+                        "value": "@if(not(equals(outputs('HTTP_PhishTank')?['statusCode'], 200)), concat('unavailable (HTTP ', string(coalesce(outputs('HTTP_PhishTank')?['statusCode'], 'no response')), ')'), if(equals(toLower(string(coalesce(variables('PhishTankJson')?['in_database'], false))), 'true'), 'available; in database', 'available; not in database'))"
+                      }
+                    },
+                    "Set_PhishTankHtml": {
+                      "runAfter": {
+                        "Set_PhishTankStatus": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "PhishTankHtml",
+                        "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>PhishTank</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Status</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{variables('PhishTankStatus')}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{if(empty(coalesce(variables('PhishTankJson')?['phish_detail_page'], '')), 'n/a', concat('<a href=\"', variables('PhishTankJson')?['phish_detail_page'], '\">open in PhishTank</a>'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">In database</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(variables('PhishTankJson')?['in_database'], false))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Verified phish</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{string(coalesce(variables('PhishTankJson')?['valid'], 'n/a'))}</b> (verified: @{string(coalesce(variables('PhishTankJson')?['verified'], 'n/a'))})</td></tr>\n</table>"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Set_PhishTankHtml_disabled": {
+                        "runAfter": {},
+                        "type": "SetVariable",
+                        "inputs": {
+                          "name": "PhishTankHtml",
+                          "value": "<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>PhishTank</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\"><tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">Disabled by deployment setting.</td></tr></table>"
+                        }
+                      }
+                    }
+                  }
+                },
+                "Run_KQL_workspace_context": {
+                  "runAfter": {
+                    "Condition_PhishTank_enabled": [
                       "Succeeded"
                     ]
                   },
@@ -979,7 +1738,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'malicious'), greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 70), greater(int(coalesce(variables('DefenderJson')?['ThreatClicks'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['HighAlerts'], 0)), 0), greater(length(body('Filter_High_Workspace_Findings')), 0)), 'HIGH', if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'suspicious'), greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 40), greater(int(coalesce(variables('DefenderJson')?['ClickedThrough'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['Alerts'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), greater(length(outputs('Compose_Workspace_Rows')), 0)), 'MEDIUM', if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'benign'), equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'neutral')), 'LOW', 'UNKNOWN')))"
+                  "inputs": "@if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'malicious'), greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 70), greater(int(coalesce(variables('DefenderJson')?['ThreatClicks'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['HighAlerts'], 0)), 0), greater(length(body('Filter_High_Workspace_Findings')), 0), greater(int(coalesce(variables('VTJson')?['last_analysis_stats']?['malicious'], 0)), 0), greater(length(variables('SafeBrowsingJson')), 0), greater(int(coalesce(variables('UrlscanJson')?['MaliciousCount'], 0)), 0), and(equals(toLower(string(coalesce(variables('PhishTankJson')?['in_database'], false))), 'true'), equals(toLower(string(coalesce(variables('PhishTankJson')?['valid'], ''))), 'y'))), 'HIGH', if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'suspicious'), greaterOrEquals(int(coalesce(variables('MDTIReputation')?['score'], 0)), 40), greater(int(coalesce(variables('DefenderJson')?['ClickedThrough'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['Alerts'], 0)), 0), greater(int(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), 0), greater(length(outputs('Compose_Workspace_Rows')), 0), greater(int(coalesce(variables('VTJson')?['last_analysis_stats']?['suspicious'], 0)), 0), greater(int(coalesce(variables('UrlscanJson')?['Total'], 0)), 0), equals(toLower(string(coalesce(variables('PhishTankJson')?['in_database'], false))), 'true')), 'MEDIUM', if(or(equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'benign'), equals(toLower(string(coalesce(variables('MDTIReputation')?['classification'], ''))), 'neutral')), 'LOW', 'UNKNOWN')))"
                 },
                 "Compose_VerdictStyle": {
                   "runAfter": {
@@ -997,7 +1756,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@concat('MDTI: ', variables('MDTIStatus'), ' &middot; Defender: ', variables('DefenderStatus'), ' &middot; observations: ', string(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), ' &middot; workspace rows: ', string(length(outputs('Compose_Workspace_Rows'))))"
+                  "inputs": "@concat('MDTI: ', variables('MDTIStatus'), ' &middot; Defender: ', variables('DefenderStatus'), ' &middot; VT: ', variables('VTStatus'), ' &middot; Safe Browsing: ', variables('SafeBrowsingStatus'), ' &middot; urlscan.io: ', variables('UrlscanStatus'), ' &middot; PhishTank: ', variables('PhishTankStatus'), ' &middot; observations: ', string(coalesce(variables('DefenderJson')?['TotalObservations'], 0)), ' &middot; workspace rows: ', string(length(outputs('Compose_Workspace_Rows'))))"
                 },
                 "Append_URL_block": {
                   "runAfter": {
@@ -1008,7 +1767,7 @@
                   "type": "AppendToStringVariable",
                   "inputs": {
                     "name": "HtmlBody",
-                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\n@{outputs('Compose_Entity_Kind')} enrichment &mdash; <code>@{outputs('Compose_Display_URL')}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Type</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Entity_Kind')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Normalized URL</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Display_URL')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Host</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{outputs('Compose_URL_Host')}</b></td></tr>\n</table>\n@{variables('MDTIHtml')}\n@{variables('DefenderHtml')}\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
+                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nURL enrichment &mdash; <code>@{outputs('Compose_Display_URL')}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Normalized URL</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{outputs('Compose_Display_URL')}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Host</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><b>@{outputs('Compose_URL_Host')}</b></td></tr>\n</table>\n@{variables('MDTIHtml')}\n@{variables('DefenderHtml')}\n@{variables('VTHtml')}\n@{variables('SafeBrowsingHtml')}\n@{variables('UrlscanHtml')}\n@{variables('PhishTankHtml')}\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
                   }
                 }
               }
@@ -1024,7 +1783,7 @@
                 "and": [
                   {
                     "greater": [
-                      "@length(body('Filter_Combined_Targets'))",
+                      "@length(coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]')))",
                       0
                     ]
                   }
@@ -1097,6 +1856,24 @@
           },
           "URLContextWatchlistAlias": {
             "value": "[parameters('URLContextWatchlistAlias')]"
+          },
+          "VirusTotalApiKey": {
+            "value": "[parameters('VirusTotalApiKey')]"
+          },
+          "GoogleSafeBrowsingApiKey": {
+            "value": "[parameters('GoogleSafeBrowsingApiKey')]"
+          },
+          "EnableUrlscanSearch": {
+            "value": "[parameters('EnableUrlscanSearch')]"
+          },
+          "UrlscanApiKey": {
+            "value": "[parameters('UrlscanApiKey')]"
+          },
+          "EnablePhishTank": {
+            "value": "[parameters('EnablePhishTank')]"
+          },
+          "PhishTankAppKey": {
+            "value": "[parameters('PhishTankAppKey')]"
           },
           "WorkspaceSubscriptionId": {
             "value": "[parameters('WorkspaceSubscriptionId')]"

@@ -5,12 +5,12 @@ It uses one required, client-owned **user-assigned managed identity (UAMI)** for
 Microsoft Sentinel and Azure Monitor Logs connections, and Defender XDR Advanced Hunting. It never
 enables a system-assigned identity.
 
-The file hash, URL/domain, IP, and device playbooks are independent, so all four can run from the
+The file hash, URL, IP, and device playbooks are independent, so all four can run from the
 same incident automation rule.
 
 ## Why this doesn't call the MDTI Graph API
 
-The IP/device and URL/domain playbooks in this repo query Microsoft Defender Threat Intelligence
+The IP/device and URL playbooks in this repo query Microsoft Defender Threat Intelligence
 (MDTI) through `security/threatIntelligence/hosts/...` in Microsoft Graph. That surface is
 host-based (IP addresses and domains) and has no hash-reputation equivalent. File-hash reputation
 comes from Microsoft's own threat intelligence natively inside Defender XDR Advanced Hunting, via
