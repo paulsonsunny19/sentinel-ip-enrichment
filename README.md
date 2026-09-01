@@ -27,8 +27,16 @@ post-delivery remediation — plus MDTI sender-domain reputation and Sentinel th
 intelligence/workspace sightings. See [`README-EMAIL.md`](README-EMAIL.md) and deploy
 `azuredeploy-email.json`.
 
-All five playbooks — IP, device, URL, file hash, and email — are independent and can all be attached
-to the same incident automation rule.
+A sixth, separate **account (user) enrichment playbook** enriches Sentinel Account entities with
+the Entra ID profile (name, job title, office/city/state/country, manager, directory roles),
+registered devices, MFA/SSPR registration posture, Entra ID Protection identity risk (including
+recent risk detections), out-of-office status, and Sentinel-workspace sign-in activity (including
+failed-MFA and MFA-fraud-reported counts) — deliberately without IP-address reputation lookups,
+which stay in the dedicated IP playbook. See [`README-ACCOUNT.md`](README-ACCOUNT.md) and deploy
+`azuredeploy-account.json`.
+
+All six playbooks — IP, device, URL, file hash, email, and account — are independent and can all be
+attached to the same incident automation rule.
 
 ## Sources and what they cost
 
@@ -96,6 +104,11 @@ azuredeploy-email.json                     separate reported-email enrichment AR
 build_email_template.py                    generator for the email template
 kql/Defender-XDR-Email-Enrichment.kql      standalone Defender email validation query
 README-EMAIL.md                            email sources, verdict logic, permissions and deployment
+
+azuredeploy-account.json                   separate Account (user) enrichment ARM template
+build_account_template.py                  generator for the account template
+kql/User-Signin-Insights.kql               standalone sign-in validation query
+README-ACCOUNT.md                          account sources, verdict logic, permissions and deployment
 ```
 
 ## Deploy (about 10 minutes)
