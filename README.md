@@ -38,6 +38,30 @@ which stay in the dedicated IP playbook. See [`README-ACCOUNT.md`](README-ACCOUN
 All six playbooks — IP, device, URL, file hash, email, and account — are independent and can all be
 attached to the same incident automation rule.
 
+## Deploy all six in one go
+
+`azuredeploy-all.json` deploys all six playbooks as one ARM deployment (each as a nested
+deployment, still with its own dedicated connections and its own full set of toggle parameters at
+their normal defaults) — one `az deployment group create` call instead of six:
+
+```bash
+az deployment group create \
+  --name sentinel-enrichment-all \
+  --resource-group "$SENTINEL_RG" \
+  --template-file azuredeploy-all.json \
+  --parameters WorkspaceName="$WORKSPACE" \
+               UserAssignedManagedIdentityResourceId="$UAMI_ID" \
+               VirusTotalApiKey="$VT_KEY" \
+               GoogleSafeBrowsingApiKey="$GSB_KEY"
+```
+
+The last two parameters are optional and only used by the URL playbook. To change any other
+playbook's own parameters (lookback windows, per-source enable flags, watchlist alias names, ...),
+redeploy that playbook's own `azuredeploy-*.json` afterward with the parameters you want — it
+targets the same resource names, so it updates in place rather than creating a duplicate. Generated
+by `build_master_template.py`, which re-runs the six individual generators first so it never embeds
+stale JSON.
+
 ## Sources and what they cost
 
 | Source | Cost | Key | Limit | Licence note |
@@ -109,6 +133,9 @@ azuredeploy-account.json                   separate Account (user) enrichment AR
 build_account_template.py                  generator for the account template
 kql/User-Signin-Insights.kql               standalone sign-in validation query
 README-ACCOUNT.md                          account sources, verdict logic, permissions and deployment
+
+azuredeploy-all.json                       deploys all six playbooks as one nested deployment
+build_master_template.py                   generator for the combined template
 ```
 
 ## Deploy (about 10 minutes)
