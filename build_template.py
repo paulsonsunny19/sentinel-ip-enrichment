@@ -3,28 +3,15 @@
 import json, pathlib
 
 
-MANAGED_IDENTITY_RESOURCE = (
-    "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), "
-    "createObject('type', 'UserAssigned', 'userAssignedIdentities', "
-    "createObject(parameters('UserAssignedManagedIdentityResourceId'), createObject())), "
-    "createObject('type', 'SystemAssigned'))]"
-)
-
-
 def managed_identity_authentication(audience=None):
-    """Return an ARM expression that selects system- or user-assigned MSI auth."""
-    system_arguments = ["'type'", "'ManagedServiceIdentity'"]
+    """Return Logic Apps authentication bound to the required user-assigned identity."""
+    authentication = {
+        "type": "ManagedServiceIdentity",
+        "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+    }
     if audience:
-        system_arguments.extend(["'audience'", f"'{audience}'"])
-    user_arguments = system_arguments + [
-        "'identity'",
-        "parameters('UserAssignedManagedIdentityResourceId')",
-    ]
-    return (
-        "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), "
-        f"createObject({', '.join(user_arguments)}), "
-        f"createObject({', '.join(system_arguments)}))]"
-    )
+        authentication["audience"] = audience
+    return authentication
 
 
 CONNECTOR_MANAGED_IDENTITY_AUTH = managed_identity_authentication()
@@ -1059,7 +1046,7 @@ template = {
         "description": "License-aware IP enrichment for Microsoft Sentinel. For every IP entity it collects Microsoft geodata, RDAP registration, Tor membership, optional AbuseIPDB, GreyNoise Community and licensed Shodan/VirusTotal context, Entra sign-in context, client watchlist matches, UEBA anomalies, ASIM network and DNS observations, threat intelligence, sightings and prior alerts. An optional Microsoft Graph module queries Defender XDR Advanced Hunting data that is not ingested into the Sentinel workspace. Results are posted as one formatted incident comment.",
         "prerequisites": "A Microsoft Sentinel-enabled Log Analytics workspace. Optional: AbuseIPDB and GreyNoise Community keys, an IPContext watchlist, appropriately licensed VirusTotal or Shodan access, and Defender XDR licensing plus Microsoft Graph ThreatHunting.Read.All application permission for direct Advanced Hunting.",
         "postDeployment": [
-            "Grant the selected managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
+            "Grant the user-assigned managed identity 'Microsoft Sentinel Responder' on the resource group holding the workspace (this also covers the geodata enrichment read).",
             "Grant the same identity 'Log Analytics Reader' on the workspace.",
             "If Defender Advanced Hunting is enabled, grant the managed identity Microsoft Graph application permission 'ThreatHunting.Read.All' using an app-role assignment and allow time for token propagation.",
             "Authorise both API connections (they are pre-set to managed identity).",
@@ -1073,19 +1060,11 @@ template = {
     "parameters": {
         "PlaybookName": {"type": "string", "defaultValue": "Enrich-IP-IncidentComment",
                          "metadata": {"description": "Name of the Logic App playbook."}},
-        "ManagedIdentityType": {
-            "type": "string",
-            "defaultValue": "SystemAssigned",
-            "allowedValues": ["SystemAssigned", "UserAssigned"],
-            "metadata": {
-                "description": "Choose SystemAssigned to create an identity with the Logic App, or UserAssigned to attach an existing client-owned managed identity."
-            },
-        },
         "UserAssignedManagedIdentityResourceId": {
             "type": "string",
-            "defaultValue": "",
+            "minLength": 1,
             "metadata": {
-                "description": "Required only when ManagedIdentityType is UserAssigned. Enter the full resource ID of one existing user-assigned managed identity in this subscription."
+                "description": "Required. Enter the full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and all managed-identity connections."
             },
         },
         "WorkspaceName": {"type": "string",
@@ -1144,7 +1123,12 @@ template = {
             "type": "Microsoft.Logic/workflows", "apiVersion": "2017-07-01",
             "name": "[parameters('PlaybookName')]",
             "location": "[resourceGroup().location]",
-            "identity": MANAGED_IDENTITY_RESOURCE,
+            "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                    "[parameters('UserAssignedManagedIdentityResourceId')]": {}
+                },
+            },
             "tags": {"hidden-SentinelTemplateName": "Enrich-IP-IncidentComment",
                      "hidden-SentinelTemplateVersion": "1.0"},
             "dependsOn": [
@@ -1189,14 +1173,14 @@ template = {
     ],
     "outputs": {
         "PlaybookResourceId": {"type": "string", "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"},
-        "ManagedIdentityType": {"type": "string", "value": "[parameters('ManagedIdentityType')]"},
+        "ManagedIdentityType": {"type": "string", "value": "UserAssigned"},
         "ManagedIdentityResourceId": {
             "type": "string",
-            "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), parameters('UserAssignedManagedIdentityResourceId'), resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')))]",
+            "value": "[parameters('UserAssignedManagedIdentityResourceId')]",
         },
         "ManagedIdentityPrincipalId": {
             "type": "string",
-            "value": "[if(equals(parameters('ManagedIdentityType'), 'UserAssigned'), reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId, reference(resourceId('Microsoft.Logic/workflows', parameters('PlaybookName')), '2017-07-01', 'full').identity.principalId)]",
+            "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId]",
         },
     },
 }
