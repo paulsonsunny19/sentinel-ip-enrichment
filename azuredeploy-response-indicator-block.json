@@ -1,0 +1,607 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Response: block IP and/or URL indicator tenant-wide",
+    "description": "For each IP and/or URL entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Microsoft Graph's threat indicator API, targeted at Microsoft Defender ATP so Defender for Endpoint enforces it. Each entity type has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+    "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission ThreatIndicators.ReadWrite.OwnedBy.",
+    "postDeployment": [
+      "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+      "Grant the managed identity the ThreatIndicators.ReadWrite.OwnedBy Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
+      "Authorise the Microsoft Sentinel API connection.",
+      "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."
+    ],
+    "lastUpdateTime": "2026-09-02",
+    "entities": [
+      "IP",
+      "URL"
+    ],
+    "tags": [
+      "Response",
+      "IP",
+      "URL",
+      "Defender for Endpoint",
+      "Indicators"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-Indicator-Block",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "UserAssignedManagedIdentityResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+      }
+    },
+    "BlockIP": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Submit a block indicator for each IP entity on the incident."
+      }
+    },
+    "BlockUrl": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Submit a block indicator for each URL entity on the incident."
+      }
+    },
+    "AzureTenantId": {
+      "type": "string",
+      "defaultValue": "[subscription().tenantId]",
+      "metadata": {
+        "description": "Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."
+      }
+    },
+    "IndicatorExpirationDays": {
+      "type": "int",
+      "defaultValue": 180,
+      "minValue": 1,
+      "maxValue": 365,
+      "metadata": {
+        "description": "How many days out from submission the block indicator expires."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('UserAssignedManagedIdentityResourceId')]": {}
+        }
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "ErgoSOC-AU-Indicator-Block",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "BlockIP": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "BlockUrl": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "AzureTenantId": {
+              "type": "String"
+            },
+            "IndicatorExpirationDays": {
+              "type": "Int",
+              "defaultValue": 180
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Init_IpBlockResult": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "IpBlockResult",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_UrlBlockResult": {
+              "runAfter": {
+                "Init_IpBlockResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "UrlBlockResult",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Condition_BlockIP_enabled": {
+              "runAfter": {
+                "Init_UrlBlockResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "equals": [
+                  "@parameters('BlockIP')",
+                  true
+                ]
+              },
+              "actions": {
+                "Entities_-_Get_IPs": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                    "path": "/entities/ip"
+                  }
+                },
+                "For_each_IP_entity": {
+                  "foreach": "@coalesce(body('Entities_-_Get_IPs')?['IPs'], json('[]'))",
+                  "runAfter": {
+                    "Entities_-_Get_IPs": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Foreach",
+                  "runtimeConfiguration": {
+                    "concurrency": {
+                      "repetitions": 1
+                    }
+                  },
+                  "actions": {
+                    "Reset_IpBlockResult": {
+                      "runAfter": {},
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "IpBlockResult",
+                        "value": ""
+                      }
+                    },
+                    "Condition_Is_IPv6": {
+                      "runAfter": {
+                        "Reset_IpBlockResult": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "If",
+                      "expression": {
+                        "equals": [
+                          "@contains(items('For_each_IP_entity')?['Address'], ':')",
+                          true
+                        ]
+                      },
+                      "actions": {
+                        "HTTP_SubmitIpIndicator_V6": {
+                          "runAfter": {},
+                          "type": "Http",
+                          "inputs": {
+                            "method": "POST",
+                            "uri": "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                            "headers": {
+                              "Accept": "application/json",
+                              "Content-Type": "application/json"
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                              "audience": "https://graph.microsoft.com"
+                            },
+                            "body": {
+                              "action": "block",
+                              "targetProduct": "Microsoft Defender ATP",
+                              "threatType": "WatchList",
+                              "tlpLevel": "amber",
+                              "azureTenantId": "@{parameters('AzureTenantId')}",
+                              "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                              "networkIPv6": "@{items('For_each_IP_entity')?['Address']}",
+                              "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                            }
+                          },
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs"
+                              ]
+                            }
+                          }
+                        },
+                        "Set_IpBlockResult_V6": {
+                          "runAfter": {
+                            "HTTP_SubmitIpIndicator_V6": [
+                              "Succeeded",
+                              "Failed",
+                              "Skipped",
+                              "TimedOut"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "IpBlockResult",
+                            "value": "@if(or(equals(outputs('HTTP_SubmitIpIndicator_V6')?['statusCode'], 200), equals(outputs('HTTP_SubmitIpIndicator_V6')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIpIndicator_V6')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIpIndicator_V6')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIpIndicator_V6')?['body']), 'no error detail returned'))))"
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {
+                          "HTTP_SubmitIpIndicator_V4": {
+                            "runAfter": {},
+                            "type": "Http",
+                            "inputs": {
+                              "method": "POST",
+                              "uri": "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                              "headers": {
+                                "Accept": "application/json",
+                                "Content-Type": "application/json"
+                              },
+                              "authentication": {
+                                "type": "ManagedServiceIdentity",
+                                "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                                "audience": "https://graph.microsoft.com"
+                              },
+                              "body": {
+                                "action": "block",
+                                "targetProduct": "Microsoft Defender ATP",
+                                "threatType": "WatchList",
+                                "tlpLevel": "amber",
+                                "azureTenantId": "@{parameters('AzureTenantId')}",
+                                "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                                "networkIPv4": "@{items('For_each_IP_entity')?['Address']}",
+                                "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                              }
+                            },
+                            "runtimeConfiguration": {
+                              "secureData": {
+                                "properties": [
+                                  "inputs"
+                                ]
+                              }
+                            }
+                          },
+                          "Set_IpBlockResult_V4": {
+                            "runAfter": {
+                              "HTTP_SubmitIpIndicator_V4": [
+                                "Succeeded",
+                                "Failed",
+                                "Skipped",
+                                "TimedOut"
+                              ]
+                            },
+                            "type": "SetVariable",
+                            "inputs": {
+                              "name": "IpBlockResult",
+                              "value": "@if(or(equals(outputs('HTTP_SubmitIpIndicator_V4')?['statusCode'], 200), equals(outputs('HTTP_SubmitIpIndicator_V4')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIpIndicator_V4')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIpIndicator_V4')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIpIndicator_V4')?['body']), 'no error detail returned'))))"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "Compose_Entity_Comment_IP": {
+                      "runAfter": {
+                        "Condition_Is_IPv6": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block IP indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>IP address</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{items('For_each_IP_entity')?['Address']}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Microsoft Defender ATP)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('IpBlockResult')}</td></tr></table>"
+                    },
+                    "Compose_Entity_Comment_Safe_IP": {
+                      "runAfter": {
+                        "Compose_Entity_Comment_IP": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(greater(length(outputs('Compose_Entity_Comment_IP')), 28000), concat(substring(outputs('Compose_Entity_Comment_IP'), 0, 28000), '<p><i>... output truncated at 28,000 characters to stay under Sentinel''s 30,000-character comment limit; see the Logic App run history for the full result.</i></p>'), outputs('Compose_Entity_Comment_IP'))"
+                    },
+                    "Add_comment_to_incident_IP": {
+                      "runAfter": {
+                        "Compose_Entity_Comment_Safe_IP": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "body": {
+                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                          "message": "<p>@{outputs('Compose_Entity_Comment_Safe_IP')}</p>"
+                        },
+                        "path": "/Incidents/Comment"
+                      }
+                    }
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            },
+            "Condition_BlockUrl_enabled": {
+              "runAfter": {
+                "Condition_BlockIP_enabled": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "equals": [
+                  "@parameters('BlockUrl')",
+                  true
+                ]
+              },
+              "actions": {
+                "Entities_-_Get_URLs": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                    "path": "/entities/url"
+                  }
+                },
+                "For_each_URL_entity": {
+                  "foreach": "@coalesce(body('Entities_-_Get_URLs')?['URLs'], json('[]'))",
+                  "runAfter": {
+                    "Entities_-_Get_URLs": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Foreach",
+                  "runtimeConfiguration": {
+                    "concurrency": {
+                      "repetitions": 1
+                    }
+                  },
+                  "actions": {
+                    "Reset_UrlBlockResult": {
+                      "runAfter": {},
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "UrlBlockResult",
+                        "value": ""
+                      }
+                    },
+                    "Compose_Clean_Url": {
+                      "runAfter": {
+                        "Reset_UrlBlockResult": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@trim(string(coalesce(items('For_each_URL_entity')?['Url'], items('For_each_URL_entity')?['url'], '')))"
+                    },
+                    "HTTP_SubmitUrlIndicator": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "POST",
+                        "uri": "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                        "headers": {
+                          "Accept": "application/json",
+                          "Content-Type": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        },
+                        "body": {
+                          "action": "block",
+                          "targetProduct": "Microsoft Defender ATP",
+                          "threatType": "WatchList",
+                          "tlpLevel": "amber",
+                          "azureTenantId": "@{parameters('AzureTenantId')}",
+                          "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                          "url": "@{outputs('Compose_Clean_Url')}",
+                          "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_UrlBlockResult": {
+                      "runAfter": {
+                        "HTTP_SubmitUrlIndicator": [
+                          "Succeeded",
+                          "Failed",
+                          "Skipped",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "UrlBlockResult",
+                        "value": "@if(or(equals(outputs('HTTP_SubmitUrlIndicator')?['statusCode'], 200), equals(outputs('HTTP_SubmitUrlIndicator')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitUrlIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitUrlIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitUrlIndicator')?['body']), 'no error detail returned'))))"
+                      }
+                    },
+                    "Compose_Entity_Comment_URL": {
+                      "runAfter": {
+                        "Set_UrlBlockResult": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block URL indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>URL</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_Clean_Url')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Microsoft Defender ATP)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('UrlBlockResult')}</td></tr></table>"
+                    },
+                    "Compose_Entity_Comment_Safe_URL": {
+                      "runAfter": {
+                        "Compose_Entity_Comment_URL": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Compose",
+                      "inputs": "@if(greater(length(outputs('Compose_Entity_Comment_URL')), 28000), concat(substring(outputs('Compose_Entity_Comment_URL'), 0, 28000), '<p><i>... output truncated at 28,000 characters to stay under Sentinel''s 30,000-character comment limit; see the Logic App run history for the full result.</i></p>'), outputs('Compose_Entity_Comment_URL'))"
+                    },
+                    "Add_comment_to_incident_URL": {
+                      "runAfter": {
+                        "Compose_Entity_Comment_Safe_URL": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "body": {
+                          "incidentArmId": "@triggerBody()?['object']?['id']",
+                          "message": "<p>@{outputs('Compose_Entity_Comment_Safe_URL')}</p>"
+                        },
+                        "path": "/Incidents/Comment"
+                      }
+                    }
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              }
+            }
+          },
+          "BlockIP": {
+            "value": "[parameters('BlockIP')]"
+          },
+          "BlockUrl": {
+            "value": "[parameters('BlockUrl')]"
+          },
+          "AzureTenantId": {
+            "value": "[parameters('AzureTenantId')]"
+          },
+          "IndicatorExpirationDays": {
+            "value": "[parameters('IndicatorExpirationDays')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityType": {
+      "type": "string",
+      "value": "UserAssigned"
+    },
+    "ManagedIdentityResourceId": {
+      "type": "string",
+      "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId]"
+    }
+  }
+}

@@ -1,39 +1,42 @@
 #!/usr/bin/env python3
 """Generates azuredeploy-response-email-block.json.
 
-ASSISTED, not automated -- read this before deploying it. Unlike the other
-three response playbooks, this one makes no live write API call. The
-reason: writing to the Microsoft 365 Tenant Allow/Block List is only
-reliably supported via the Exchange Online PowerShell
-*-TenantAllowBlockListItems cmdlets; there is no well-documented Microsoft
-Graph HTTP endpoint for it (the Graph beta tenantAllowBlockLists surface
-appears to be read-oriented in practice, and community reports consistently
-say writes require EXO PowerShell -- see README-RESPONSE.md for the sources).
-Shipping a guessed Graph call here would silently do nothing while looking
-like it worked, which is worse than not automating it.
+ASSISTED BY DEFAULT, with an opt-in AUTOMATED path. Writing to the
+Microsoft 365 Tenant Allow/Block List is only reliably supported via the
+Exchange Online PowerShell *-TenantAllowBlockListItems cmdlets -- there is
+no well-documented Microsoft Graph HTTP endpoint for it (the Graph beta
+tenantAllowBlockLists surface appears to be read-oriented in practice, and
+community reports consistently say writes require EXO PowerShell -- see
+README-RESPONSE.md for the sources). So this playbook always composes the
+exact PowerShell command(s) and posts them to the incident comment for an
+analyst to run.
 
-So instead, for each Mail message entity, this playbook composes the exact
-PowerShell command(s) to run (New-TenantAllowBlockListItems) and the search
-values needed to locate the message in Microsoft Defender Threat Explorer,
-and posts them to the incident comment for an analyst to execute. If your
-tenant already has an Automation Account or Function App that can run EXO
-PowerShell with app-only auth (Exchange.ManageAsApp), swap the composed
-command into an actual call from there -- that's a bigger, separate piece
-of infrastructure than the plain UAMI HTTP pattern used everywhere else in
-this repo, so it's deliberately not built into this Logic App.
+If you've deployed azuredeploy-automation-account-response.json and
+published runbooks/Set-ErgoSOC-TenantBlockListItem.ps1 into it (see
+README-RESPONSE.md), you can additionally set AutoExecuteBlock=true and
+fill in AutomationAccountResourceId/ExoAppId/ExoOrganization to have this
+playbook actually submit the block as an Automation job, not just compose
+the command. That default stays OFF -- turning it on is a deliberate,
+separate decision from deploying the playbook itself, since it's a bigger
+trust escalation (a cert-authenticated app that can write to your tenant's
+mail flow) than everything else in this repo.
 
-Because it performs no write call, this playbook needs no Graph write
-permission at all -- Microsoft Sentinel Responder is the only grant it
-needs, same as a read-only enrichment playbook.
+The job submission is fire-and-forget (the Automation Job REST API is
+asynchronous) -- the comment reports the job ID and tells you to check the
+Automation Account's Jobs blade for the actual outcome, it does not poll
+for completion within the same Logic App run.
 """
 import pathlib
 
 from response_common import (
+    ARM_AUTH,
     TD,
     TH,
     after,
     base_outputs,
     base_parameters,
+    http_call,
+    result_expr,
     sentinel_connection_resource,
     workflow_resource,
     write_template,
@@ -45,7 +48,7 @@ SENTINEL_CONN = "@parameters('$connections')['azuresentinel']['connectionId']"
 HEADER = (
     "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;"
     "margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; email block/quarantine "
-    "assist (no live action taken -- see below) &middot; run @{utcNow()} UTC</div>"
+    "&middot; run @{utcNow()} UTC</div>"
 )
 
 EMAIL_ROW = (
@@ -56,11 +59,17 @@ EMAIL_ROW = (
     f"<th style='{TH}'>Subject</th><td style='{TD}'>@{{outputs('Compose_Subject')}}</td></tr>"
     f"<tr><th style='{TH}'>Network message ID</th><td style='{TD}' colspan=\"3\">@{{outputs('Compose_NetworkMessageId')}}</td></tr>"
     f"</table>"
-    f"<div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>Block command(s) to run "
-    f"(Exchange Online PowerShell)</b> <span style=\"font-weight:400;color:#605e5c\">"
-    f"-- not run automatically; see the playbook's prerequisites for why</span></div>"
+    f"<div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>Block command(s)</b> "
+    f"<span style=\"font-weight:400;color:#605e5c\">(Exchange Online PowerShell -- the only reliable way to write "
+    f"this list)</span></div>"
     f"<table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'>"
     f"<tr><td style='{TD}'><code>@{{outputs('Compose_BlockCommands')}}</code></td></tr>"
+    f"</table>"
+    f"<div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>Auto-execute "
+    f"(Automation Account)</b></div>"
+    f"<table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'>"
+    f"<tr><th style='{TH}'>Domain block job</th><td style='{TD}'>@{{variables('DomainJobResult')}}</td>"
+    f"<th style='{TH}'>Address block job</th><td style='{TD}'>@{{variables('AddressJobResult')}}</td></tr>"
     f"</table>"
     f"<div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>To remove/quarantine the "
     f"message</b></div>"
@@ -72,6 +81,45 @@ EMAIL_ROW = (
 )
 
 
+def submit_job_action(suffix, value_expr):
+    """One Automation Job PUT for a given sender/domain value expression
+    (e.g. outputs('Compose_SenderDomain')). The job name is a fresh guid()
+    generated right before the call, reused in both the URI and the
+    reported comment.
+
+    suffix distinguishes the action names of this call site (e.g. 'Domain'
+    vs 'Address') -- Logic Apps requires action names to be unique across
+    the whole workflow, not just within their own If-branch, so the two
+    call sites below can't share plain 'Compose_JobId'/'HTTP_SubmitBlockJob'
+    names even though they sit in separate branches."""
+    compose_name = f"Compose_JobId_{suffix}"
+    http_name = f"HTTP_SubmitBlockJob_{suffix}"
+    return {
+        compose_name: {"runAfter": {}, "type": "Compose", "inputs": "@guid()"},
+        http_name: {
+            **http_call(
+                f"@{{concat('https://management.azure.com', parameters('AutomationAccountResourceId'), "
+                f"'/jobs/', outputs('{compose_name}'), '?api-version=2019-06-01')}}",
+                method="PUT", auth=ARM_AUTH,
+                body={
+                    "properties": {
+                        "runbook": {"name": "@{parameters('RunbookName')}"},
+                        "parameters": {
+                            "AppId": "@{parameters('ExoAppId')}",
+                            "Organization": "@{parameters('ExoOrganization')}",
+                            "CertificateAssetName": "@{parameters('ExoCertificateAssetName')}",
+                            "Value": f"@{{{value_expr}}}",
+                            "EntryType": "Sender",
+                            "Action": "Block",
+                        },
+                    }
+                },
+            ),
+            "runAfter": after(compose_name),
+        },
+    }
+
+
 def build_definition():
     return {
         "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
@@ -80,6 +128,12 @@ def build_definition():
             "$connections": {"defaultValue": {}, "type": "Object"},
             "BlockSenderDomain": {"type": "Bool", "defaultValue": True},
             "BlockSenderAddress": {"type": "Bool", "defaultValue": False},
+            "AutoExecuteBlock": {"type": "Bool", "defaultValue": False},
+            "AutomationAccountResourceId": {"type": "String", "defaultValue": ""},
+            "RunbookName": {"type": "String", "defaultValue": "Set-ErgoSOC-TenantBlockListItem"},
+            "ExoAppId": {"type": "String", "defaultValue": ""},
+            "ExoOrganization": {"type": "String", "defaultValue": ""},
+            "ExoCertificateAssetName": {"type": "String", "defaultValue": "ErgoSOC-EXO-Cert"},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -135,8 +189,16 @@ def build_definition():
                 "type": "Foreach",
                 "runtimeConfiguration": {"concurrency": {"repetitions": 1}},
                 "actions": {
+                    "Reset_DomainJobResult": {
+                        "runAfter": {}, "type": "SetVariable",
+                        "inputs": {"name": "DomainJobResult", "value": "not attempted (AutoExecuteBlock is off, or AutomationAccountResourceId/BlockSenderDomain not set)"},
+                    },
+                    "Reset_AddressJobResult": {
+                        "runAfter": after("Reset_DomainJobResult"), "type": "SetVariable",
+                        "inputs": {"name": "AddressJobResult", "value": "not attempted (AutoExecuteBlock is off, or AutomationAccountResourceId/BlockSenderAddress not set)"},
+                    },
                     "Compose_NetworkMessageId": {
-                        "runAfter": {}, "type": "Compose",
+                        "runAfter": after("Reset_AddressJobResult"), "type": "Compose",
                         "inputs": (
                             "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['networkMessageId'], "
                             "items('For_each_Mail_entity')?['NetworkMessageId'], '(unknown)')))"
@@ -185,8 +247,62 @@ def build_definition():
                             ")"
                         ),
                     },
+                    "Condition_AutoExecute_Domain": {
+                        "runAfter": after("Compose_BlockCommands"), "type": "If",
+                        "expression": {
+                            "and": [
+                                {"equals": ["@parameters('AutoExecuteBlock')", True]},
+                                {"equals": ["@parameters('BlockSenderDomain')", True]},
+                                {"not": {"equals": ["@parameters('AutomationAccountResourceId')", ""]}},
+                            ]
+                        },
+                        "actions": {
+                            **submit_job_action("Domain", "outputs('Compose_SenderDomain')"),
+                            "Set_DomainJobResult": {
+                                "runAfter": after("HTTP_SubmitBlockJob_Domain", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "DomainJobResult",
+                                    "value": (
+                                        "@concat('job ', outputs('Compose_JobId_Domain'), ' submission: ', "
+                                        + result_expr("HTTP_SubmitBlockJob_Domain", [200, 201]).lstrip("@")
+                                        + ", ' (submission succeeding does not mean the block already applied -- "
+                                        + "check the Automation Account Jobs blade for the actual completion status)')"
+                                    ),
+                                },
+                            },
+                        },
+                        "else": {"actions": {}},
+                    },
+                    "Condition_AutoExecute_Address": {
+                        "runAfter": after("Condition_AutoExecute_Domain"), "type": "If",
+                        "expression": {
+                            "and": [
+                                {"equals": ["@parameters('AutoExecuteBlock')", True]},
+                                {"equals": ["@parameters('BlockSenderAddress')", True]},
+                                {"not": {"equals": ["@parameters('AutomationAccountResourceId')", ""]}},
+                            ]
+                        },
+                        "actions": {
+                            **submit_job_action("Address", "outputs('Compose_Sender')"),
+                            "Set_AddressJobResult": {
+                                "runAfter": after("HTTP_SubmitBlockJob_Address", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                                "type": "SetVariable",
+                                "inputs": {
+                                    "name": "AddressJobResult",
+                                    "value": (
+                                        "@concat('job ', outputs('Compose_JobId_Address'), ' submission: ', "
+                                        + result_expr("HTTP_SubmitBlockJob_Address", [200, 201]).lstrip("@")
+                                        + ", ' (submission succeeding does not mean the block already applied -- "
+                                        + "check the Automation Account Jobs blade for the actual completion status)')"
+                                    ),
+                                },
+                            },
+                        },
+                        "else": {"actions": {}},
+                    },
                     "Compose_Entity_Comment": {
-                        "runAfter": after("Compose_BlockCommands"), "type": "Compose",
+                        "runAfter": after("Condition_AutoExecute_Address"), "type": "Compose",
                         "inputs": HEADER + EMAIL_ROW,
                     },
                     "Compose_Entity_Comment_Safe": {
@@ -221,32 +337,69 @@ def build_definition():
 
 def build_template():
     definition = build_definition()
+    inits = {
+        "Init_DomainJobResult": {
+            "runAfter": {}, "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "DomainJobResult", "type": "string", "value": ""}]},
+        },
+        "Init_AddressJobResult": {
+            "runAfter": after("Init_DomainJobResult"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "AddressJobResult", "type": "string", "value": ""}]},
+        },
+    }
+    definition["actions"] = {**inits, **definition["actions"]}
+    definition["actions"]["Parse_Related_Entities"]["runAfter"] = after("Init_AddressJobResult")
+
     template = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
         "contentVersion": "1.0.0.0",
         "metadata": {
-            "title": "Response (assisted): compose sender block command and quarantine pointer for Mail message entities",
-            "description": "For each Mail message entity on a Microsoft Sentinel incident, composes the exact Exchange Online PowerShell command(s) to block the sender/domain and the search values needed to find and remove the message in Microsoft Defender Threat Explorer, and posts them to the incident comment. Does NOT call any write API itself -- writing to the Tenant Allow/Block List is only reliably supported via Exchange Online PowerShell, not a documented Graph HTTP endpoint, so this playbook assists rather than automates. Not wired to an automation rule.",
-            "prerequisites": "One existing user-assigned managed identity with Microsoft Sentinel Responder only -- no Graph write permission is needed since this playbook performs no write call.",
+            "title": "Response: block sender/domain (assisted by default, optional auto-execute) and quarantine pointer for Mail message entities",
+            "description": "For each Mail message entity on a Microsoft Sentinel incident, composes the exact Exchange Online PowerShell command(s) to block the sender/domain and the search values needed to find and remove the message in Microsoft Defender Threat Explorer, and posts them to the incident comment. If AutoExecuteBlock is set to true and an Automation Account (running runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) is configured, it additionally submits the block as an Automation job -- otherwise it only composes the command for an analyst to run. Not wired to an automation rule.",
+            "prerequisites": "One existing user-assigned managed identity with Microsoft Sentinel Responder. If using AutoExecuteBlock, also: an Automation Account (azuredeploy-automation-account-response.json) with the runbook published, Automation Job Operator Azure RBAC on that Automation Account for the UAMI, and an Entra app registration with a certificate and an Exchange Online RBAC role for the runbook itself -- see README-RESPONSE.md.",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
                 "Authorise the Microsoft Sentinel API connection.",
-                "This playbook only composes commands/links; an analyst (or a separate automation with Exchange Online PowerShell access) still has to run them.",
+                "Leave AutoExecuteBlock=false (the default) to stay assisted-only. To enable auto-execution, complete the Automation Account / app registration / EXO RBAC setup in README-RESPONSE.md first, then redeploy with AutoExecuteBlock=true and the Automation Account / Exo* parameters filled in.",
             ],
             "lastUpdateTime": "2026-09-02",
             "entities": ["MailMessage"],
-            "tags": ["Response", "Email", "Assisted", "Tenant Allow-Block List"],
+            "tags": ["Response", "Email", "Tenant Allow-Block List"],
             "support": {"tier": "community"},
         },
         "parameters": {
             **base_parameters("ErgoSOC-AU-Email-BlockSenderAndQuarantine"),
             "BlockSenderDomain": {
                 "type": "bool", "defaultValue": True,
-                "metadata": {"description": "Include a block command for the sender's whole domain in the generated command list."},
+                "metadata": {"description": "Include a block command (and, if AutoExecuteBlock is on, a job) for the sender's whole domain."},
             },
             "BlockSenderAddress": {
                 "type": "bool", "defaultValue": False,
-                "metadata": {"description": "Include a block command for the exact sender address (in addition to, or instead of, the domain) in the generated command list."},
+                "metadata": {"description": "Include a block command (and, if AutoExecuteBlock is on, a job) for the exact sender address."},
+            },
+            "AutoExecuteBlock": {
+                "type": "bool", "defaultValue": False,
+                "metadata": {"description": "Actually submit the block as an Automation job instead of only composing the command. Requires AutomationAccountResourceId and the Exo* parameters below. Stays off by default -- turn on deliberately, after completing the setup in README-RESPONSE.md."},
+            },
+            "AutomationAccountResourceId": {
+                "type": "string", "defaultValue": "",
+                "metadata": {"description": "Full resource ID of the Automation Account from azuredeploy-automation-account-response.json. Required only if AutoExecuteBlock is true."},
+            },
+            "RunbookName": {
+                "type": "string", "defaultValue": "Set-ErgoSOC-TenantBlockListItem",
+                "metadata": {"description": "Name of the published runbook (runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) in the Automation Account."},
+            },
+            "ExoAppId": {
+                "type": "string", "defaultValue": "",
+                "metadata": {"description": "Application (client) ID of the Entra app registration used for app-only Exchange Online auth by the runbook. Required only if AutoExecuteBlock is true."},
+            },
+            "ExoOrganization": {
+                "type": "string", "defaultValue": "",
+                "metadata": {"description": "Tenant's *.onmicrosoft.com domain, passed to Connect-ExchangeOnline. Required only if AutoExecuteBlock is true."},
+            },
+            "ExoCertificateAssetName": {
+                "type": "string", "defaultValue": "ErgoSOC-EXO-Cert",
+                "metadata": {"description": "Name of the Automation Account certificate asset holding the app's private key."},
             },
         },
         "variables": {
@@ -260,6 +413,12 @@ def build_template():
                 extra_deploy_parameters={
                     "BlockSenderDomain": {"value": "[parameters('BlockSenderDomain')]"},
                     "BlockSenderAddress": {"value": "[parameters('BlockSenderAddress')]"},
+                    "AutoExecuteBlock": {"value": "[parameters('AutoExecuteBlock')]"},
+                    "AutomationAccountResourceId": {"value": "[parameters('AutomationAccountResourceId')]"},
+                    "RunbookName": {"value": "[parameters('RunbookName')]"},
+                    "ExoAppId": {"value": "[parameters('ExoAppId')]"},
+                    "ExoOrganization": {"value": "[parameters('ExoOrganization')]"},
+                    "ExoCertificateAssetName": {"value": "[parameters('ExoCertificateAssetName')]"},
                 },
             ),
         ],

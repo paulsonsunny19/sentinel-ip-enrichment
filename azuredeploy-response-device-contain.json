@@ -2,13 +2,13 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "title": "Response: isolate device and/or run antivirus scan for Host entities",
-    "description": "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network and/or starts a quick antivirus scan. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
-    "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission AdvancedQuery.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate and Machine.Scan (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
+    "title": "Response: isolate device, run antivirus scan, and/or restrict app execution for Host entities",
+    "description": "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network, starts a quick antivirus scan, and/or restricts app execution to Microsoft-signed binaries only. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+    "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission AdvancedQuery.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate, Machine.Scan and Machine.RestrictExecution (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
     "postDeployment": [
       "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
       "Grant the managed identity the AdvancedQuery.Read.All Microsoft Graph application permission via an app-role assignment.",
-      "Separately grant the managed identity the Machine.Isolate and Machine.Scan application permissions on the WindowsDefenderATP API (not Microsoft Graph) -- see README-RESPONSE.md for the exact az CLI commands.",
+      "Separately grant the managed identity the Machine.Isolate, Machine.Scan and Machine.RestrictExecution application permissions on the WindowsDefenderATP API (not Microsoft Graph) -- see README-RESPONSE.md for the exact az CLI commands.",
       "Authorise the Microsoft Sentinel API connection.",
       "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."
     ],
@@ -53,6 +53,13 @@
       "defaultValue": true,
       "metadata": {
         "description": "Start a quick antivirus scan on the device (Defender for Endpoint machine runAntiVirusScan action)."
+      }
+    },
+    "RestrictAppExecution": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Restrict the device to running only Microsoft-signed binaries (Defender for Endpoint machine restrictCodeExecution action). A milder alternative to full isolation -- defaults off since it's usually chosen instead of, not alongside, IsolateDevice."
       }
     }
   },
@@ -110,6 +117,10 @@
             "RunAntiVirusScan": {
               "type": "Bool",
               "defaultValue": true
+            },
+            "RestrictAppExecution": {
+              "type": "Bool",
+              "defaultValue": false
             }
           },
           "triggers": {
@@ -176,9 +187,26 @@
                 ]
               }
             },
-            "Entities_-_Get_Hosts": {
+            "Init_RestrictResult": {
               "runAfter": {
                 "Init_ScanResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "RestrictResult",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_Hosts": {
+              "runAfter": {
+                "Init_RestrictResult": [
                   "Succeeded"
                 ]
               },
@@ -240,9 +268,21 @@
                     "value": "@if(equals(parameters('RunAntiVirusScan'), true), 'skipped - could not resolve Defender machine ID for this host', 'disabled by deployment setting')"
                   }
                 },
-                "HTTP_Resolve_Machine_Id": {
+                "Reset_RestrictResult": {
                   "runAfter": {
                     "Reset_ScanResult": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "RestrictResult",
+                    "value": "@if(equals(parameters('RestrictAppExecution'), true), 'skipped - could not resolve Defender machine ID for this host', 'disabled by deployment setting')"
+                  }
+                },
+                "HTTP_Resolve_Machine_Id": {
+                  "runAfter": {
+                    "Reset_RestrictResult": [
                       "Succeeded"
                     ]
                   },
@@ -422,6 +462,67 @@
                       "else": {
                         "actions": {}
                       }
+                    },
+                    "Condition_RestrictAppExecution": {
+                      "runAfter": {
+                        "Condition_RunAntiVirusScan": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "If",
+                      "expression": {
+                        "equals": [
+                          "@parameters('RestrictAppExecution')",
+                          true
+                        ]
+                      },
+                      "actions": {
+                        "HTTP_RestrictAppExecution": {
+                          "runAfter": {},
+                          "type": "Http",
+                          "inputs": {
+                            "method": "POST",
+                            "uri": "@{concat('https://api.securitycenter.microsoft.com/api/machines/', variables('MachineId'), '/restrictCodeExecution')}",
+                            "headers": {
+                              "Accept": "application/json",
+                              "Content-Type": "application/json"
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                              "audience": "https://api.securitycenter.microsoft.com"
+                            },
+                            "body": {
+                              "Comment": "App execution restricted by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                            }
+                          },
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs"
+                              ]
+                            }
+                          }
+                        },
+                        "Set_RestrictResult": {
+                          "runAfter": {
+                            "HTTP_RestrictAppExecution": [
+                              "Succeeded",
+                              "Failed",
+                              "Skipped",
+                              "TimedOut"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "RestrictResult",
+                            "value": "@if(or(equals(outputs('HTTP_RestrictAppExecution')?['statusCode'], 200), equals(outputs('HTTP_RestrictAppExecution')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_RestrictAppExecution')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_RestrictAppExecution')?['body']?['error']?['message'], string(outputs('HTTP_RestrictAppExecution')?['body']), 'no error detail returned'))))"
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {}
+                      }
                     }
                   },
                   "else": {
@@ -435,7 +536,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; device containment (isolate / AV scan) &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Host</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), '')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Resolved Defender machine ID</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{if(equals(variables('MachineId'), ''), 'NOT RESOLVED -- no action taken', variables('MachineId'))}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Isolate device (full)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('IsolateResult')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Run antivirus scan (quick)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('ScanResult')}</td></tr></table>"
+                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; device containment (isolate / AV scan) &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Host</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), '')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Resolved Defender machine ID</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{if(equals(variables('MachineId'), ''), 'NOT RESOLVED -- no action taken', variables('MachineId'))}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Isolate device (full)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('IsolateResult')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Run antivirus scan (quick)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('ScanResult')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Restrict app execution</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('RestrictResult')}</td></tr></table>"
                 },
                 "Compose_Entity_Comment_Safe": {
                   "runAfter": {
@@ -493,6 +594,9 @@
           },
           "RunAntiVirusScan": {
             "value": "[parameters('RunAntiVirusScan')]"
+          },
+          "RestrictAppExecution": {
+            "value": "[parameters('RestrictAppExecution')]"
           }
         }
       }

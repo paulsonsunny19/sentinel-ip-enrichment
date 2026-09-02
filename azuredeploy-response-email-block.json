@@ -2,13 +2,13 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "title": "Response (assisted): compose sender block command and quarantine pointer for Mail message entities",
-    "description": "For each Mail message entity on a Microsoft Sentinel incident, composes the exact Exchange Online PowerShell command(s) to block the sender/domain and the search values needed to find and remove the message in Microsoft Defender Threat Explorer, and posts them to the incident comment. Does NOT call any write API itself -- writing to the Tenant Allow/Block List is only reliably supported via Exchange Online PowerShell, not a documented Graph HTTP endpoint, so this playbook assists rather than automates. Not wired to an automation rule.",
-    "prerequisites": "One existing user-assigned managed identity with Microsoft Sentinel Responder only -- no Graph write permission is needed since this playbook performs no write call.",
+    "title": "Response: block sender/domain (assisted by default, optional auto-execute) and quarantine pointer for Mail message entities",
+    "description": "For each Mail message entity on a Microsoft Sentinel incident, composes the exact Exchange Online PowerShell command(s) to block the sender/domain and the search values needed to find and remove the message in Microsoft Defender Threat Explorer, and posts them to the incident comment. If AutoExecuteBlock is set to true and an Automation Account (running runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) is configured, it additionally submits the block as an Automation job -- otherwise it only composes the command for an analyst to run. Not wired to an automation rule.",
+    "prerequisites": "One existing user-assigned managed identity with Microsoft Sentinel Responder. If using AutoExecuteBlock, also: an Automation Account (azuredeploy-automation-account-response.json) with the runbook published, Automation Job Operator Azure RBAC on that Automation Account for the UAMI, and an Entra app registration with a certificate and an Exchange Online RBAC role for the runbook itself -- see README-RESPONSE.md.",
     "postDeployment": [
       "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
       "Authorise the Microsoft Sentinel API connection.",
-      "This playbook only composes commands/links; an analyst (or a separate automation with Exchange Online PowerShell access) still has to run them."
+      "Leave AutoExecuteBlock=false (the default) to stay assisted-only. To enable auto-execution, complete the Automation Account / app registration / EXO RBAC setup in README-RESPONSE.md first, then redeploy with AutoExecuteBlock=true and the Automation Account / Exo* parameters filled in."
     ],
     "lastUpdateTime": "2026-09-02",
     "entities": [
@@ -17,7 +17,6 @@
     "tags": [
       "Response",
       "Email",
-      "Assisted",
       "Tenant Allow-Block List"
     ],
     "support": {
@@ -43,14 +42,56 @@
       "type": "bool",
       "defaultValue": true,
       "metadata": {
-        "description": "Include a block command for the sender's whole domain in the generated command list."
+        "description": "Include a block command (and, if AutoExecuteBlock is on, a job) for the sender's whole domain."
       }
     },
     "BlockSenderAddress": {
       "type": "bool",
       "defaultValue": false,
       "metadata": {
-        "description": "Include a block command for the exact sender address (in addition to, or instead of, the domain) in the generated command list."
+        "description": "Include a block command (and, if AutoExecuteBlock is on, a job) for the exact sender address."
+      }
+    },
+    "AutoExecuteBlock": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Actually submit the block as an Automation job instead of only composing the command. Requires AutomationAccountResourceId and the Exo* parameters below. Stays off by default -- turn on deliberately, after completing the setup in README-RESPONSE.md."
+      }
+    },
+    "AutomationAccountResourceId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Full resource ID of the Automation Account from azuredeploy-automation-account-response.json. Required only if AutoExecuteBlock is true."
+      }
+    },
+    "RunbookName": {
+      "type": "string",
+      "defaultValue": "Set-ErgoSOC-TenantBlockListItem",
+      "metadata": {
+        "description": "Name of the published runbook (runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) in the Automation Account."
+      }
+    },
+    "ExoAppId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Application (client) ID of the Entra app registration used for app-only Exchange Online auth by the runbook. Required only if AutoExecuteBlock is true."
+      }
+    },
+    "ExoOrganization": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Tenant's *.onmicrosoft.com domain, passed to Connect-ExchangeOnline. Required only if AutoExecuteBlock is true."
+      }
+    },
+    "ExoCertificateAssetName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-EXO-Cert",
+      "metadata": {
+        "description": "Name of the Automation Account certificate asset holding the app's private key."
       }
     }
   },
@@ -108,6 +149,30 @@
             "BlockSenderAddress": {
               "type": "Bool",
               "defaultValue": false
+            },
+            "AutoExecuteBlock": {
+              "type": "Bool",
+              "defaultValue": false
+            },
+            "AutomationAccountResourceId": {
+              "type": "String",
+              "defaultValue": ""
+            },
+            "RunbookName": {
+              "type": "String",
+              "defaultValue": "Set-ErgoSOC-TenantBlockListItem"
+            },
+            "ExoAppId": {
+              "type": "String",
+              "defaultValue": ""
+            },
+            "ExoOrganization": {
+              "type": "String",
+              "defaultValue": ""
+            },
+            "ExoCertificateAssetName": {
+              "type": "String",
+              "defaultValue": "ErgoSOC-EXO-Cert"
             }
           },
           "triggers": {
@@ -127,8 +192,42 @@
             }
           },
           "actions": {
-            "Parse_Related_Entities": {
+            "Init_DomainJobResult": {
               "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DomainJobResult",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Init_AddressJobResult": {
+              "runAfter": {
+                "Init_DomainJobResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "AddressJobResult",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Parse_Related_Entities": {
+              "runAfter": {
+                "Init_AddressJobResult": [
+                  "Succeeded"
+                ]
+              },
               "type": "ParseJson",
               "inputs": {
                 "content": "@triggerBody()?['object']?['properties']?['relatedEntities']",
@@ -206,8 +305,32 @@
                 }
               },
               "actions": {
-                "Compose_NetworkMessageId": {
+                "Reset_DomainJobResult": {
                   "runAfter": {},
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DomainJobResult",
+                    "value": "not attempted (AutoExecuteBlock is off, or AutomationAccountResourceId/BlockSenderDomain not set)"
+                  }
+                },
+                "Reset_AddressJobResult": {
+                  "runAfter": {
+                    "Reset_DomainJobResult": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "AddressJobResult",
+                    "value": "not attempted (AutoExecuteBlock is off, or AutomationAccountResourceId/BlockSenderAddress not set)"
+                  }
+                },
+                "Compose_NetworkMessageId": {
+                  "runAfter": {
+                    "Reset_AddressJobResult": [
+                      "Succeeded"
+                    ]
+                  },
                   "type": "Compose",
                   "inputs": "@trim(string(coalesce(items('For_each_Mail_entity')?['properties']?['networkMessageId'], items('For_each_Mail_entity')?['NetworkMessageId'], '(unknown)')))"
                 },
@@ -256,14 +379,214 @@
                   "type": "Compose",
                   "inputs": "@concat(if(equals(parameters('BlockSenderDomain'), true), concat('New-TenantAllowBlockListItems -ListType Sender -Block -Entries \"', outputs('Compose_SenderDomain'), '\" -NoExpiration<br>'), ''), if(equals(parameters('BlockSenderAddress'), true), concat('New-TenantAllowBlockListItems -ListType Sender -Block -Entries \"', outputs('Compose_Sender'), '\" -NoExpiration<br>'), ''), if(and(equals(parameters('BlockSenderDomain'), false), equals(parameters('BlockSenderAddress'), false)), '(both BlockSenderDomain and BlockSenderAddress are set to false for this deployment -- no command generated)', ''))"
                 },
-                "Compose_Entity_Comment": {
+                "Condition_AutoExecute_Domain": {
                   "runAfter": {
                     "Compose_BlockCommands": [
                       "Succeeded"
                     ]
                   },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('AutoExecuteBlock')",
+                          true
+                        ]
+                      },
+                      {
+                        "equals": [
+                          "@parameters('BlockSenderDomain')",
+                          true
+                        ]
+                      },
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('AutomationAccountResourceId')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Compose_JobId_Domain": {
+                      "runAfter": {},
+                      "type": "Compose",
+                      "inputs": "@guid()"
+                    },
+                    "HTTP_SubmitBlockJob_Domain": {
+                      "runAfter": {
+                        "Compose_JobId_Domain": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Http",
+                      "inputs": {
+                        "method": "PUT",
+                        "uri": "@{concat('https://management.azure.com', parameters('AutomationAccountResourceId'), '/jobs/', outputs('Compose_JobId_Domain'), '?api-version=2019-06-01')}",
+                        "headers": {
+                          "Accept": "application/json",
+                          "Content-Type": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://management.azure.com/"
+                        },
+                        "body": {
+                          "properties": {
+                            "runbook": {
+                              "name": "@{parameters('RunbookName')}"
+                            },
+                            "parameters": {
+                              "AppId": "@{parameters('ExoAppId')}",
+                              "Organization": "@{parameters('ExoOrganization')}",
+                              "CertificateAssetName": "@{parameters('ExoCertificateAssetName')}",
+                              "Value": "@{outputs('Compose_SenderDomain')}",
+                              "EntryType": "Sender",
+                              "Action": "Block"
+                            }
+                          }
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_DomainJobResult": {
+                      "runAfter": {
+                        "HTTP_SubmitBlockJob_Domain": [
+                          "Succeeded",
+                          "Failed",
+                          "Skipped",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "DomainJobResult",
+                        "value": "@concat('job ', outputs('Compose_JobId_Domain'), ' submission: ', if(or(equals(outputs('HTTP_SubmitBlockJob_Domain')?['statusCode'], 200), equals(outputs('HTTP_SubmitBlockJob_Domain')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitBlockJob_Domain')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitBlockJob_Domain')?['body']?['error']?['message'], string(outputs('HTTP_SubmitBlockJob_Domain')?['body']), 'no error detail returned')))), ' (submission succeeding does not mean the block already applied -- check the Automation Account Jobs blade for the actual completion status)')"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Condition_AutoExecute_Address": {
+                  "runAfter": {
+                    "Condition_AutoExecute_Domain": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@parameters('AutoExecuteBlock')",
+                          true
+                        ]
+                      },
+                      {
+                        "equals": [
+                          "@parameters('BlockSenderAddress')",
+                          true
+                        ]
+                      },
+                      {
+                        "not": {
+                          "equals": [
+                            "@parameters('AutomationAccountResourceId')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Compose_JobId_Address": {
+                      "runAfter": {},
+                      "type": "Compose",
+                      "inputs": "@guid()"
+                    },
+                    "HTTP_SubmitBlockJob_Address": {
+                      "runAfter": {
+                        "Compose_JobId_Address": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "Http",
+                      "inputs": {
+                        "method": "PUT",
+                        "uri": "@{concat('https://management.azure.com', parameters('AutomationAccountResourceId'), '/jobs/', outputs('Compose_JobId_Address'), '?api-version=2019-06-01')}",
+                        "headers": {
+                          "Accept": "application/json",
+                          "Content-Type": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://management.azure.com/"
+                        },
+                        "body": {
+                          "properties": {
+                            "runbook": {
+                              "name": "@{parameters('RunbookName')}"
+                            },
+                            "parameters": {
+                              "AppId": "@{parameters('ExoAppId')}",
+                              "Organization": "@{parameters('ExoOrganization')}",
+                              "CertificateAssetName": "@{parameters('ExoCertificateAssetName')}",
+                              "Value": "@{outputs('Compose_Sender')}",
+                              "EntryType": "Sender",
+                              "Action": "Block"
+                            }
+                          }
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_AddressJobResult": {
+                      "runAfter": {
+                        "HTTP_SubmitBlockJob_Address": [
+                          "Succeeded",
+                          "Failed",
+                          "Skipped",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "AddressJobResult",
+                        "value": "@concat('job ', outputs('Compose_JobId_Address'), ' submission: ', if(or(equals(outputs('HTTP_SubmitBlockJob_Address')?['statusCode'], 200), equals(outputs('HTTP_SubmitBlockJob_Address')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitBlockJob_Address')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitBlockJob_Address')?['body']?['error']?['message'], string(outputs('HTTP_SubmitBlockJob_Address')?['body']), 'no error detail returned')))), ' (submission succeeding does not mean the block already applied -- check the Automation Account Jobs blade for the actual completion status)')"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Compose_Entity_Comment": {
+                  "runAfter": {
+                    "Condition_AutoExecute_Address": [
+                      "Succeeded"
+                    ]
+                  },
                   "type": "Compose",
-                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; email block/quarantine assist (no live action taken -- see below) &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Sender</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Sender')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Sender domain</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_SenderDomain')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Recipient</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Recipient')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Subject</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Subject')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Network message ID</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_NetworkMessageId')}</td></tr></table><div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>Block command(s) to run (Exchange Online PowerShell)</b> <span style=\"font-weight:400;color:#605e5c\">-- not run automatically; see the playbook's prerequisites for why</span></div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'><code>@{outputs('Compose_BlockCommands')}</code></td></tr></table><div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>To remove/quarantine the message</b></div><div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#323130\">Open <a href='https://security.microsoft.com/threatexplorerv3' target='_blank'>Microsoft Defender Threat Explorer</a> and search All email using Network message ID <code>@{outputs('Compose_NetworkMessageId')}</code> (or Subject/Sender/Recipient above), then use Take action &rarr; Move to Deleted Items / Move to Junk / Soft delete as appropriate.</div>"
+                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; email block/quarantine &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Sender</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Sender')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Sender domain</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_SenderDomain')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Recipient</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Recipient')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Subject</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Subject')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Network message ID</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_NetworkMessageId')}</td></tr></table><div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>Block command(s)</b> <span style=\"font-weight:400;color:#605e5c\">(Exchange Online PowerShell -- the only reliable way to write this list)</span></div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'><code>@{outputs('Compose_BlockCommands')}</code></td></tr></table><div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>Auto-execute (Automation Account)</b></div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Domain block job</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('DomainJobResult')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Address block job</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('AddressJobResult')}</td></tr></table><div style='margin:10px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px'><b>To remove/quarantine the message</b></div><div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#323130\">Open <a href='https://security.microsoft.com/threatexplorerv3' target='_blank'>Microsoft Defender Threat Explorer</a> and search All email using Network message ID <code>@{outputs('Compose_NetworkMessageId')}</code> (or Subject/Sender/Recipient above), then use Take action &rarr; Move to Deleted Items / Move to Junk / Soft delete as appropriate.</div>"
                 },
                 "Compose_Entity_Comment_Safe": {
                   "runAfter": {
@@ -321,6 +644,24 @@
           },
           "BlockSenderAddress": {
             "value": "[parameters('BlockSenderAddress')]"
+          },
+          "AutoExecuteBlock": {
+            "value": "[parameters('AutoExecuteBlock')]"
+          },
+          "AutomationAccountResourceId": {
+            "value": "[parameters('AutomationAccountResourceId')]"
+          },
+          "RunbookName": {
+            "value": "[parameters('RunbookName')]"
+          },
+          "ExoAppId": {
+            "value": "[parameters('ExoAppId')]"
+          },
+          "ExoOrganization": {
+            "value": "[parameters('ExoOrganization')]"
+          },
+          "ExoCertificateAssetName": {
+            "value": "[parameters('ExoCertificateAssetName')]"
           }
         }
       }

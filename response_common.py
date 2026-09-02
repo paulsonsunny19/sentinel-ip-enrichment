@@ -42,6 +42,10 @@ GRAPH_AUTH = managed_identity_authentication("https://graph.microsoft.com")
 # Microsoft Graph, needs its own app-role assignment against the
 # "WindowsDefenderATP" enterprise application (not Microsoft Graph).
 MDE_AUTH = managed_identity_authentication("https://api.securitycenter.microsoft.com")
+# Azure Resource Manager: used to start an Azure Automation runbook job (the
+# UAMI needs an Azure RBAC role -- e.g. "Automation Job Operator" -- on the
+# target Automation Account, not a Graph app-role assignment).
+ARM_AUTH = managed_identity_authentication("https://management.azure.com/")
 
 SENTINEL_CONN = "@parameters('$connections')['azuresentinel']['connectionId']"
 

@@ -2,9 +2,12 @@
 """Generates azuredeploy-response-device-contain.json.
 
 Response (not enrichment) playbook: for each Host entity on the incident,
-isolates the device from the network and/or kicks off a Defender
-antivirus scan on it. Each action has its own on/off parameter, both
-default true.
+isolates the device from the network, kicks off a Defender antivirus
+scan, and/or restricts app execution to Microsoft-signed binaries only.
+Each action has its own on/off parameter -- Isolate and Scan default
+true, RestrictAppExecution defaults false since it's a milder, more
+often opt-in containment step usually chosen instead of a full isolate
+rather than alongside it.
 
 The Defender machine ID (a GUID distinct from the Sentinel Host entity)
 is resolved via a Microsoft Graph Advanced Hunting query against
@@ -20,10 +23,10 @@ resources:
   - Microsoft Graph application permission AdvancedQuery.Read.All (to
     resolve the Defender machine ID via runHuntingQuery).
   - "WindowsDefenderATP" (Microsoft Defender for Endpoint) application
-    permissions Machine.Isolate and Machine.Scan -- these are NOT
-    Microsoft Graph permissions; they're app roles on the separate
-    WindowsDefenderATP API and must be granted against that enterprise
-    application, not Microsoft Graph.
+    permissions Machine.Isolate, Machine.Scan and Machine.RestrictExecution
+    -- these are NOT Microsoft Graph permissions; they're app roles on the
+    separate WindowsDefenderATP API and must be granted against that
+    enterprise application, not Microsoft Graph.
 """
 import pathlib
 
@@ -72,6 +75,7 @@ DEVICE_ROW = (
     f"<th style='{TH}'>Approval</th><td style='{TD}'>manual playbook run by an analyst</td></tr>"
     f"<tr><th style='{TH}'>Isolate device (full)</th><td style='{TD}'>@{{variables('IsolateResult')}}</td>"
     f"<th style='{TH}'>Run antivirus scan (quick)</th><td style='{TD}'>@{{variables('ScanResult')}}</td></tr>"
+    f"<tr><th style='{TH}'>Restrict app execution</th><td style='{TD}' colspan=\"3\">@{{variables('RestrictResult')}}</td></tr>"
     f"</table>"
 )
 
@@ -84,6 +88,7 @@ def build_definition():
             "$connections": {"defaultValue": {}, "type": "Object"},
             "IsolateDevice": {"type": "Bool", "defaultValue": True},
             "RunAntiVirusScan": {"type": "Bool", "defaultValue": True},
+            "RestrictAppExecution": {"type": "Bool", "defaultValue": False},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -129,13 +134,20 @@ def build_definition():
                             "value": "@if(equals(parameters('RunAntiVirusScan'), true), 'skipped - could not resolve Defender machine ID for this host', 'disabled by deployment setting')",
                         },
                     },
+                    "Reset_RestrictResult": {
+                        "runAfter": after("Reset_ScanResult"), "type": "SetVariable",
+                        "inputs": {
+                            "name": "RestrictResult",
+                            "value": "@if(equals(parameters('RestrictAppExecution'), true), 'skipped - could not resolve Defender machine ID for this host', 'disabled by deployment setting')",
+                        },
+                    },
                     "HTTP_Resolve_Machine_Id": {
                         **http_call(
                             "https://graph.microsoft.com/v1.0/security/runHuntingQuery",
                             method="POST", auth=GRAPH_AUTH,
                             body={"Query": DEVICE_ID_KQL, "Timespan": "P30D"},
                         ),
-                        "runAfter": after("Reset_ScanResult"),
+                        "runAfter": after("Reset_RestrictResult"),
                     },
                     "Set_MachineId": {
                         "runAfter": after("HTTP_Resolve_Machine_Id", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
@@ -194,6 +206,26 @@ def build_definition():
                                 },
                                 "else": {"actions": {}},
                             },
+                            "Condition_RestrictAppExecution": {
+                                "runAfter": after("Condition_RunAntiVirusScan"), "type": "If",
+                                "expression": {"equals": ["@parameters('RestrictAppExecution')", True]},
+                                "actions": {
+                                    "HTTP_RestrictAppExecution": http_call(
+                                        "@{concat('https://api.securitycenter.microsoft.com/api/machines/', "
+                                        "variables('MachineId'), '/restrictCodeExecution')}",
+                                        method="POST", auth=MDE_AUTH,
+                                        body={
+                                            "Comment": "App execution restricted by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
+                                        },
+                                    ),
+                                    "Set_RestrictResult": {
+                                        "runAfter": after("HTTP_RestrictAppExecution", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                                        "type": "SetVariable",
+                                        "inputs": {"name": "RestrictResult", "value": result_expr("HTTP_RestrictAppExecution", [200, 201])},
+                                    },
+                                },
+                                "else": {"actions": {}},
+                            },
                         },
                         "else": {"actions": {}},
                     },
@@ -246,21 +278,25 @@ def build_template():
             "runAfter": after("Init_IsolateResult"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "ScanResult", "type": "string", "value": "disabled by deployment setting"}]},
         },
+        "Init_RestrictResult": {
+            "runAfter": after("Init_ScanResult"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "RestrictResult", "type": "string", "value": "disabled by deployment setting"}]},
+        },
     }
     definition["actions"] = {**inits, **definition["actions"]}
-    definition["actions"]["Entities_-_Get_Hosts"]["runAfter"] = after("Init_ScanResult")
+    definition["actions"]["Entities_-_Get_Hosts"]["runAfter"] = after("Init_RestrictResult")
 
     template = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
         "contentVersion": "1.0.0.0",
         "metadata": {
-            "title": "Response: isolate device and/or run antivirus scan for Host entities",
-            "description": "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network and/or starts a quick antivirus scan. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
-            "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission AdvancedQuery.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate and Machine.Scan (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
+            "title": "Response: isolate device, run antivirus scan, and/or restrict app execution for Host entities",
+            "description": "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network, starts a quick antivirus scan, and/or restricts app execution to Microsoft-signed binaries only. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+            "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission AdvancedQuery.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate, Machine.Scan and Machine.RestrictExecution (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
                 "Grant the managed identity the AdvancedQuery.Read.All Microsoft Graph application permission via an app-role assignment.",
-                "Separately grant the managed identity the Machine.Isolate and Machine.Scan application permissions on the WindowsDefenderATP API (not Microsoft Graph) -- see README-RESPONSE.md for the exact az CLI commands.",
+                "Separately grant the managed identity the Machine.Isolate, Machine.Scan and Machine.RestrictExecution application permissions on the WindowsDefenderATP API (not Microsoft Graph) -- see README-RESPONSE.md for the exact az CLI commands.",
                 "Authorise the Microsoft Sentinel API connection.",
                 "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead.",
             ],
@@ -279,6 +315,10 @@ def build_template():
                 "type": "bool", "defaultValue": True,
                 "metadata": {"description": "Start a quick antivirus scan on the device (Defender for Endpoint machine runAntiVirusScan action)."},
             },
+            "RestrictAppExecution": {
+                "type": "bool", "defaultValue": False,
+                "metadata": {"description": "Restrict the device to running only Microsoft-signed binaries (Defender for Endpoint machine restrictCodeExecution action). A milder alternative to full isolation -- defaults off since it's usually chosen instead of, not alongside, IsolateDevice."},
+            },
         },
         "variables": {
             "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
@@ -291,6 +331,7 @@ def build_template():
                 extra_deploy_parameters={
                     "IsolateDevice": {"value": "[parameters('IsolateDevice')]"},
                     "RunAntiVirusScan": {"value": "[parameters('RunAntiVirusScan')]"},
+                    "RestrictAppExecution": {"value": "[parameters('RestrictAppExecution')]"},
                 },
             ),
         ],
