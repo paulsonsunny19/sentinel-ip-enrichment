@@ -296,6 +296,11 @@ severity or the external reputation verdict.
 
 ## Things worth knowing
 
+- **One comment per IP entity, not one per incident.** Each entity's comment posts as soon as its
+  own enrichment finishes, right inside the loop — an incident with several IPs gets several
+  comments, not one giant one. This also keeps every comment under Sentinel's 30,000-character
+  `/Incidents/Comment` limit; if one entity's own data is still unusually large, that single
+  comment is truncated at 28,000 characters with a note, rather than the whole comment failing.
 - **Nothing is fatal.** Every lookup, workspace query and Defender query runs with failure tolerated — a rate-limited
   API, a blocked egress path, or a table you don't collect degrades that one section to "lookup
   failed" / "No results" rather than failing the run. `union isfuzzy=true` is what makes missing

@@ -760,30 +760,40 @@ definition = {
                 "Compose_VerdictReason": {
                     "runAfter": after("Compose_VerdictStyle"), "type": "Compose", "inputs": VERDICT_REASON,
                 },
-                "Append_Email_block": {
-                    "runAfter": after("Compose_VerdictReason"), "type": "AppendToStringVariable",
-                    "inputs": {"name": "HtmlBody", "value": EMAIL_BLOCK},
+                # Post one comment per entity, right here inside the loop, instead of
+                # accumulating every entity's block into one shared HtmlBody and posting
+                # it once after the loop -- see build_template.py's IP playbook for the
+                # full rationale (Sentinel's /Incidents/Comment rejects any single
+                # comment over 30,000 characters, and a shared comment made that trivial
+                # to hit and failed the ENTIRE comment when it did).
+                "Compose_Entity_Comment": {
+                    "runAfter": after("Compose_VerdictReason"), "type": "Compose",
+                    "inputs": HEADER + EMAIL_BLOCK,
                 },
-            },
-        },
-        "Condition_any_Mail_entities": {
-            "runAfter": after("For_each_Mail_entity"), "type": "If",
-            "expression": {"and": [{"greater": ["@length(body('Filter_Mail_Entities'))", 0]}]},
-            "actions": {
+                "Compose_Entity_Comment_Safe": {
+                    "runAfter": after("Compose_Entity_Comment"), "type": "Compose",
+                    "inputs": (
+                        "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), "
+                        "concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), "
+                        "'<p><i>... output truncated at 28,000 characters to stay under Sentinel''s "
+                        "30,000-character comment limit; see the Logic App run history for the full "
+                        "result.</i></p>'), "
+                        "outputs('Compose_Entity_Comment'))"
+                    ),
+                },
                 "Add_comment_to_incident_V3": {
-                    "runAfter": {}, "type": "ApiConnection",
+                    "runAfter": after("Compose_Entity_Comment_Safe"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": SENTINEL_CONN}},
                         "method": "post",
                         "body": {
                             "incidentArmId": "@triggerBody()?['object']?['id']",
-                            "message": "<p>@{variables('HtmlBody')}</p>",
+                            "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>",
                         },
                         "path": "/Incidents/Comment",
                     },
-                }
+                },
             },
-            "else": {"actions": {}},
         },
     },
     "outputs": {},

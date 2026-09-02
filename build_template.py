@@ -1008,31 +1008,44 @@ definition = {
                 "Compose_VerdictReason": {
                     "runAfter": after("Compose_VerdictStyle"), "type": "Compose", "inputs": VERDICT_REASON,
                 },
-                "Append_IP_block": {
-                    "runAfter": after("Compose_VerdictReason"), "type": "AppendToStringVariable",
-                    "inputs": {"name": "HtmlBody", "value": IP_BLOCK},
+                # Post one comment per entity, right here inside the loop, instead of
+                # accumulating every entity's block into one shared HtmlBody and posting
+                # it once after the loop. Sentinel's /Incidents/Comment API rejects any
+                # single comment over 30,000 characters; a shared, ever-growing comment
+                # made that limit trivial to hit on an incident with several IP entities
+                # (and would then fail the ENTIRE comment, losing every entity's
+                # enrichment, not just the overflow). Per-entity comments are bounded by
+                # one entity's own data, which is the fix; the truncation step below is
+                # just a backstop for the rare single entity whose own block is still
+                # unusually large (e.g. a very long RDAP/AbuseIPDB/GreyNoise dump).
+                "Compose_Entity_Comment": {
+                    "runAfter": after("Compose_VerdictReason"), "type": "Compose",
+                    "inputs": HEADER + IP_BLOCK,
                 },
-            },
-        },
-        # ---- write the comment ------------------------------------------------------
-        "Condition_any_IP_entities": {
-            "runAfter": after("For_each_IP_entity"), "type": "If",
-            "expression": {"and": [{"greater": ["@length(coalesce(body('Entities_-_Get_IPs')?['IPs'], json('[]')))", 0]}]},
-            "actions": {
+                "Compose_Entity_Comment_Safe": {
+                    "runAfter": after("Compose_Entity_Comment"), "type": "Compose",
+                    "inputs": (
+                        "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), "
+                        "concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), "
+                        "'<p><i>... output truncated at 28,000 characters to stay under Sentinel''s "
+                        "30,000-character comment limit; see the Logic App run history for the full "
+                        "result.</i></p>'), "
+                        "outputs('Compose_Entity_Comment'))"
+                    ),
+                },
                 "Add_comment_to_incident_V3": {
-                    "runAfter": {}, "type": "ApiConnection",
+                    "runAfter": after("Compose_Entity_Comment_Safe"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": SENTINEL_CONN}},
                         "method": "post",
                         "body": {
                             "incidentArmId": "@triggerBody()?['object']?['id']",
-                            "message": "<p>@{variables('HtmlBody')}</p>",
+                            "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>",
                         },
                         "path": "/Incidents/Comment",
                     },
-                }
+                },
             },
-            "else": {"actions": {}},
         },
     },
     "outputs": {},

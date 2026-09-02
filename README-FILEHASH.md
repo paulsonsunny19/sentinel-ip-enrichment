@@ -162,6 +162,10 @@ lowercase) in `SearchKey`. Optional columns are `Classification` (or `Risk`), `O
 
 ## Operational notes
 
+- Each hash's comment posts individually, right inside the loop — an incident with several
+  FileHash entities gets several comments, not one shared one. That keeps every comment under
+  Sentinel's 30,000-character `/Incidents/Comment` limit; if one hash's own data is still unusually
+  large, that single comment truncates at 28,000 characters with a note instead of failing outright.
 - One hash makes one Defender hunting call (which itself runs `FileProfile()` plus five activity
   sub-queries) and one workspace query. The hash loop is deliberately sequential to control quota
   and shared-variable updates.

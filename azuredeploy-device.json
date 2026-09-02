@@ -557,40 +557,30 @@
                   "type": "Compose",
                   "inputs": "@concat('Defender status: ', variables('DefenderStatus'), ' &middot; alerts H/M: ', string(coalesce(variables('DefenderJson')?['HighSeverityAlerts'], 0)), '/', string(coalesce(variables('DefenderJson')?['MediumSeverityAlerts'], 0)), ' &middot; vulnerabilities C/H: ', string(coalesce(variables('DefenderJson')?['CriticalVulnerabilities'], 0)), '/', string(coalesce(variables('DefenderJson')?['HighVulnerabilities'], 0)), ' &middot; exposure: ', string(coalesce(variables('DefenderJson')?['ExposureLevel'], 'unknown')), ' &middot; internet-facing: ', string(coalesce(variables('DefenderJson')?['IsInternetFacing'], 'unknown')), ' &middot; ', string(length(outputs('Compose_Workspace_Rows'))), ' workspace insight row(s)')"
                 },
-                "Append_Device_block": {
+                "Compose_Entity_Comment": {
                   "runAfter": {
                     "Compose_VerdictReason": [
                       "Succeeded"
                     ]
                   },
-                  "type": "AppendToStringVariable",
-                  "inputs": {
-                    "name": "HtmlBody",
-                    "value": "<hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nDevice enrichment &mdash; <code>@{string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], 'unknown'))}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel host entity</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hostname</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['HostName'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">DNS / NT domain</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['DnsDomain'], 'n/a'))} / @{string(coalesce(items('For_each_host_entity')?['NTDomain'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">NetBIOS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['NetBiosName'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['OSFamily'], 'n/a'))} @{string(coalesce(items('For_each_host_entity')?['OSVersion'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Domain joined</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['IsDomainJoined'], 'unknown'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OMS agent ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><code>@{string(coalesce(items('For_each_host_entity')?['OMSAgentID'], 'n/a'))}</code></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Azure resource ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\"><code>@{string(coalesce(items('For_each_host_entity')?['AzureID'], 'n/a'))}</code></td></tr>\n</table>\n\n@{variables('DefenderHtml')}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
-                  }
-                }
-              }
-            },
-            "Condition_any_host_entities": {
-              "runAfter": {
-                "For_each_host_entity": [
-                  "Succeeded"
-                ]
-              },
-              "type": "If",
-              "expression": {
-                "and": [
-                  {
-                    "greater": [
-                      "@length(coalesce(body('Entities_-_Get_Hosts')?['Hosts'], json('[]')))",
-                      0
+                  "type": "Compose",
+                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:12px;color:#605e5c\">Automated device enrichment &mdash; playbook <b>@{workflow()?['name']}</b> &middot; run @{formatDateTime(utcNow(), 'yyyy-MM-dd HH:mm')} UTC</div><hr style=\"border:0;border-top:1px solid #e1dfdd;margin:16px 0\">\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:14px;font-weight:600;margin-bottom:6px\">\nDevice enrichment &mdash; <code>@{string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], 'unknown'))}</code>\n<span style=\"@{outputs('Compose_VerdictStyle')}\">@{outputs('Compose_Verdict')}</span>\n</div>\n<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-bottom:10px\">@{outputs('Compose_VerdictReason')}</div>\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel host entity</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Hostname</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['HostName'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">DNS / NT domain</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['DnsDomain'], 'n/a'))} / @{string(coalesce(items('For_each_host_entity')?['NTDomain'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">NetBIOS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['NetBiosName'], 'n/a'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OS</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['OSFamily'], 'n/a'))} @{string(coalesce(items('For_each_host_entity')?['OSVersion'], 'n/a'))}</td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Domain joined</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\">@{string(coalesce(items('For_each_host_entity')?['IsDomainJoined'], 'unknown'))}</td><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">OMS agent ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\"><code>@{string(coalesce(items('For_each_host_entity')?['OMSAgentID'], 'n/a'))}</code></td></tr>\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Azure resource ID</th><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\"><code>@{string(coalesce(items('For_each_host_entity')?['AzureID'], 'n/a'))}</code></td></tr>\n</table>\n\n@{variables('DefenderHtml')}\n\n<div style=\"margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px\"><b>Sentinel workspace insights &mdash; last @{parameters('LookbackDays')} days</b></div>\n<table style=\"border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%\">\n<tr><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Source</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Detail</th><th style=\"text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap\">Last seen (UTC)</th></tr>\n@{if(empty(outputs('Compose_Workspace_Rows')), concat('<tr><td style=\"padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top\" colspan=\"3\">No matching workspace records, or the queried tables are not collected.</td></tr>'), join(body('Select_Workspace_Rows'), ''))}\n</table>"
+                },
+                "Compose_Entity_Comment_Safe": {
+                  "runAfter": {
+                    "Compose_Entity_Comment": [
+                      "Succeeded"
                     ]
-                  }
-                ]
-              },
-              "actions": {
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), '<p><i>... output truncated at 28,000 characters to stay under Sentinel''s 30,000-character comment limit; see the Logic App run history for the full result.</i></p>'), outputs('Compose_Entity_Comment'))"
+                },
                 "Add_comment_to_incident_V3": {
-                  "runAfter": {},
+                  "runAfter": {
+                    "Compose_Entity_Comment_Safe": [
+                      "Succeeded"
+                    ]
+                  },
                   "type": "ApiConnection",
                   "inputs": {
                     "host": {
@@ -601,14 +591,11 @@
                     "method": "post",
                     "body": {
                       "incidentArmId": "@triggerBody()?['object']?['id']",
-                      "message": "<p>@{variables('HtmlBody')}</p>"
+                      "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>"
                     },
                     "path": "/Incidents/Comment"
                   }
                 }
-              },
-              "else": {
-                "actions": {}
               }
             }
           },

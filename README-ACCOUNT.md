@@ -182,6 +182,11 @@ raise the playbook verdict to HIGH.
 
 ## Operational notes
 
+- Each account's comment posts individually, right inside the loop — an incident with several
+  Account entities gets several comments, not one shared one. That keeps every comment under
+  Sentinel's 30,000-character `/Incidents/Comment` limit; if one account's own data is still
+  unusually large, that single comment truncates at 28,000 characters with a note instead of
+  failing outright.
 - One account can make up to nine Graph calls (profile, manager, roles, devices, MFA report, risky
   user, risk detections, mailbox settings, and an optional UPN→object-ID resolve) plus two workspace
   queries. The account loop is deliberately sequential to control quota and shared-variable updates.

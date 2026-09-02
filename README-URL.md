@@ -187,6 +187,10 @@ the hostname in `SearchKey`. Optional columns are `Classification` (or `Risk`), 
 
 ## Operational notes
 
+- Each URL's comment posts individually, right inside the loop — an incident with several URL
+  entities gets several comments, not one shared one. That keeps every comment under Sentinel's
+  30,000-character `/Incidents/Comment` limit; if one URL's own data is still unusually large, that
+  single comment truncates at 28,000 characters with a note instead of failing outright.
 - One URL can make up to seven MDTI Graph calls, one Defender hunting call, one VirusTotal call, one
   Safe Browsing call, one urlscan.io call, one PhishTank call, and one workspace query. The URL loop
   is deliberately sequential to control quota and shared-variable updates.

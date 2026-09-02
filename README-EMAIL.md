@@ -168,6 +168,11 @@ just its domain in `SearchKey`. Optional columns are `Classification` (or `Risk`
 
 ## Operational notes
 
+- Each email's comment posts individually, right inside the loop — an incident with several Mail
+  message entities gets several comments, not one shared one. That keeps every comment under
+  Sentinel's 30,000-character `/Incidents/Comment` limit; if one email's own data is still
+  unusually large, that single comment truncates at 28,000 characters with a note instead of
+  failing outright.
 - One email makes up to two MDTI Graph calls, one Defender hunting call (which itself pulls the
   email record plus five related-activity sub-queries), and one workspace query. The email loop is
   deliberately sequential to control quota and shared-variable updates.
