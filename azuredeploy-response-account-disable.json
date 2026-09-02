@@ -1,0 +1,587 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Response: disable account and/or confirm compromised for Account entities",
+    "description": "For each Account entity on a Microsoft Sentinel incident, disables the Entra ID account and/or marks it compromised in Entra ID Protection (confirmCompromised). Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+    "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permissions User.ReadWrite.All (disable) and IdentityRiskyUser.ReadWrite.All (confirm compromised).",
+    "postDeployment": [
+      "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+      "Grant the managed identity the User.ReadWrite.All and IdentityRiskyUser.ReadWrite.All Microsoft Graph application permissions via app-role assignments, then allow time for token propagation.",
+      "Authorise the Microsoft Sentinel API connection.",
+      "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."
+    ],
+    "lastUpdateTime": "2026-09-02",
+    "entities": [
+      "Account"
+    ],
+    "tags": [
+      "Response",
+      "Account",
+      "Entra ID",
+      "Identity Protection",
+      "Containment"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-Account-DisableAndConfirmCompromised",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "UserAssignedManagedIdentityResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+      }
+    },
+    "DisableAccount": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Disable the Entra ID account (accountEnabled = false)."
+      }
+    },
+    "ConfirmCompromised": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Mark the account compromised in Entra ID Protection (identityProtection/riskyUsers/confirmCompromised)."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('UserAssignedManagedIdentityResourceId')]": {}
+        }
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "ErgoSOC-AU-Account-DisableAndConfirmCompromised",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "DisableAccount": {
+              "type": "Bool",
+              "defaultValue": true
+            },
+            "ConfirmCompromised": {
+              "type": "Bool",
+              "defaultValue": true
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_incident": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Init_DisableResult": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "DisableResult",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_ConfirmResult": {
+              "runAfter": {
+                "Init_DisableResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "ConfirmResult",
+                    "type": "string",
+                    "value": "disabled by deployment setting"
+                  }
+                ]
+              }
+            },
+            "Init_ResolvedObjectId": {
+              "runAfter": {
+                "Init_ConfirmResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "ResolvedObjectId",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Entities_-_Get_Accounts": {
+              "runAfter": {
+                "Init_ResolvedObjectId": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "body": "@triggerBody()?['object']?['properties']?['relatedEntities']",
+                "path": "/entities/account"
+              }
+            },
+            "For_each_Account_entity": {
+              "foreach": "@coalesce(body('Entities_-_Get_Accounts')?['Accounts'], json('[]'))",
+              "runAfter": {
+                "Entities_-_Get_Accounts": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Foreach",
+              "runtimeConfiguration": {
+                "concurrency": {
+                  "repetitions": 1
+                }
+              },
+              "actions": {
+                "Reset_DisableResult": {
+                  "runAfter": {},
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "DisableResult",
+                    "value": "@if(equals(parameters('DisableAccount'), true), 'skipped - could not resolve Entra object ID for this entity', 'disabled by deployment setting')"
+                  }
+                },
+                "Reset_ConfirmResult": {
+                  "runAfter": {
+                    "Reset_DisableResult": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "ConfirmResult",
+                    "value": "@if(equals(parameters('ConfirmCompromised'), true), 'skipped - could not resolve Entra object ID for this entity', 'disabled by deployment setting')"
+                  }
+                },
+                "Reset_ResolvedObjectId": {
+                  "runAfter": {
+                    "Reset_ConfirmResult": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "SetVariable",
+                  "inputs": {
+                    "name": "ResolvedObjectId",
+                    "value": ""
+                  }
+                },
+                "Compose_AadUserId": {
+                  "runAfter": {
+                    "Reset_ResolvedObjectId": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@trim(string(coalesce(items('For_each_Account_entity')?['AadUserId'], items('For_each_Account_entity')?['aadUserId'], items('For_each_Account_entity')?['ObjectGuid'], items('For_each_Account_entity')?['objectGuid'], '')))"
+                },
+                "Compose_UPN": {
+                  "runAfter": {
+                    "Compose_AadUserId": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@toLower(trim(string(coalesce(items('For_each_Account_entity')?['UserPrincipalName'], items('For_each_Account_entity')?['userPrincipalName'], if(and(not(equals(items('For_each_Account_entity')?['AccountName'], null)), not(equals(items('For_each_Account_entity')?['UPNSuffix'], null))), concat(items('For_each_Account_entity')?['AccountName'], '@', items('For_each_Account_entity')?['UPNSuffix']), ''), ''))))"
+                },
+                "Compose_Display_Name_Entity": {
+                  "runAfter": {
+                    "Compose_UPN": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@trim(string(coalesce(items('For_each_Account_entity')?['DisplayName'], items('For_each_Account_entity')?['displayName'], '(no display name)')))"
+                },
+                "Compose_User_Ref": {
+                  "runAfter": {
+                    "Compose_Display_Name_Entity": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), outputs('Compose_UPN'))"
+                },
+                "Condition_Resolve_ObjectId": {
+                  "runAfter": {
+                    "Compose_User_Ref": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@outputs('Compose_AadUserId')",
+                          ""
+                        ]
+                      },
+                      {
+                        "not": {
+                          "equals": [
+                            "@outputs('Compose_UPN')",
+                            ""
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "HTTP_Resolve_User_Id": {
+                      "runAfter": {},
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{concat('https://graph.microsoft.com/v1.0/users/', uriComponent(outputs('Compose_UPN')), '?$select=id')}",
+                        "headers": {
+                          "Accept": "application/json",
+                          "Content-Type": "application/json"
+                        },
+                        "authentication": {
+                          "type": "ManagedServiceIdentity",
+                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                          "audience": "https://graph.microsoft.com"
+                        }
+                      },
+                      "runtimeConfiguration": {
+                        "secureData": {
+                          "properties": [
+                            "inputs"
+                          ]
+                        }
+                      }
+                    },
+                    "Set_ResolvedObjectId": {
+                      "runAfter": {
+                        "HTTP_Resolve_User_Id": [
+                          "Succeeded",
+                          "Failed",
+                          "Skipped",
+                          "TimedOut"
+                        ]
+                      },
+                      "type": "SetVariable",
+                      "inputs": {
+                        "name": "ResolvedObjectId",
+                        "value": "@if(equals(outputs('HTTP_Resolve_User_Id')?['statusCode'], 200), string(coalesce(body('HTTP_Resolve_User_Id')?['id'], '')), '')"
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Compose_Effective_Object_Id": {
+                  "runAfter": {
+                    "Condition_Resolve_ObjectId": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), variables('ResolvedObjectId'))"
+                },
+                "Condition_Has_Object_Id": {
+                  "runAfter": {
+                    "Compose_Effective_Object_Id": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "If",
+                  "expression": {
+                    "not": {
+                      "equals": [
+                        "@outputs('Compose_Effective_Object_Id')",
+                        ""
+                      ]
+                    }
+                  },
+                  "actions": {
+                    "Condition_DisableAccount": {
+                      "runAfter": {},
+                      "type": "If",
+                      "expression": {
+                        "equals": [
+                          "@parameters('DisableAccount')",
+                          true
+                        ]
+                      },
+                      "actions": {
+                        "HTTP_DisableAccount": {
+                          "runAfter": {},
+                          "type": "Http",
+                          "inputs": {
+                            "method": "PATCH",
+                            "uri": "@{concat('https://graph.microsoft.com/v1.0/users/', uriComponent(outputs('Compose_Effective_Object_Id')))}",
+                            "headers": {
+                              "Accept": "application/json",
+                              "Content-Type": "application/json"
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                              "audience": "https://graph.microsoft.com"
+                            },
+                            "body": {
+                              "accountEnabled": false
+                            }
+                          },
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs"
+                              ]
+                            }
+                          }
+                        },
+                        "Set_DisableResult": {
+                          "runAfter": {
+                            "HTTP_DisableAccount": [
+                              "Succeeded",
+                              "Failed",
+                              "Skipped",
+                              "TimedOut"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "DisableResult",
+                            "value": "@if(or(equals(outputs('HTTP_DisableAccount')?['statusCode'], 204)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_DisableAccount')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_DisableAccount')?['body']?['error']?['message'], string(outputs('HTTP_DisableAccount')?['body']), 'no error detail returned'))))"
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {}
+                      }
+                    },
+                    "Condition_ConfirmCompromised": {
+                      "runAfter": {
+                        "Condition_DisableAccount": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "If",
+                      "expression": {
+                        "equals": [
+                          "@parameters('ConfirmCompromised')",
+                          true
+                        ]
+                      },
+                      "actions": {
+                        "HTTP_ConfirmCompromised": {
+                          "runAfter": {},
+                          "type": "Http",
+                          "inputs": {
+                            "method": "POST",
+                            "uri": "https://graph.microsoft.com/v1.0/identityProtection/riskyUsers/confirmCompromised",
+                            "headers": {
+                              "Accept": "application/json",
+                              "Content-Type": "application/json"
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                              "audience": "https://graph.microsoft.com"
+                            },
+                            "body": {
+                              "userIds": [
+                                "@{outputs('Compose_Effective_Object_Id')}"
+                              ]
+                            }
+                          },
+                          "runtimeConfiguration": {
+                            "secureData": {
+                              "properties": [
+                                "inputs"
+                              ]
+                            }
+                          }
+                        },
+                        "Set_ConfirmResult": {
+                          "runAfter": {
+                            "HTTP_ConfirmCompromised": [
+                              "Succeeded",
+                              "Failed",
+                              "Skipped",
+                              "TimedOut"
+                            ]
+                          },
+                          "type": "SetVariable",
+                          "inputs": {
+                            "name": "ConfirmResult",
+                            "value": "@if(or(equals(outputs('HTTP_ConfirmCompromised')?['statusCode'], 200), equals(outputs('HTTP_ConfirmCompromised')?['statusCode'], 202), equals(outputs('HTTP_ConfirmCompromised')?['statusCode'], 204)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_ConfirmCompromised')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_ConfirmCompromised')?['body']?['error']?['message'], string(outputs('HTTP_ConfirmCompromised')?['body']), 'no error detail returned'))))"
+                          }
+                        }
+                      },
+                      "else": {
+                        "actions": {}
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {}
+                  }
+                },
+                "Compose_Entity_Comment": {
+                  "runAfter": {
+                    "Condition_Has_Object_Id": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; account disable / confirm compromised &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Account</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_Display_Name_Entity')} (@{outputs('Compose_User_Ref')})</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Resolved Entra object ID</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{if(equals(outputs('Compose_Effective_Object_Id'), ''), 'NOT RESOLVED -- no action taken', outputs('Compose_Effective_Object_Id'))}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Disable account</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('DisableResult')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Confirm compromised (Identity Protection)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{variables('ConfirmResult')}</td></tr></table>"
+                },
+                "Compose_Entity_Comment_Safe": {
+                  "runAfter": {
+                    "Compose_Entity_Comment": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), '<p><i>... output truncated at 28,000 characters to stay under Sentinel''s 30,000-character comment limit; see the Logic App run history for the full result.</i></p>'), outputs('Compose_Entity_Comment'))"
+                },
+                "Add_comment_to_incident_V3": {
+                  "runAfter": {
+                    "Compose_Entity_Comment_Safe": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": {
+                      "incidentArmId": "@triggerBody()?['object']?['id']",
+                      "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>"
+                    },
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              }
+            }
+          },
+          "DisableAccount": {
+            "value": "[parameters('DisableAccount')]"
+          },
+          "ConfirmCompromised": {
+            "value": "[parameters('ConfirmCompromised')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityType": {
+      "type": "string",
+      "value": "UserAssigned"
+    },
+    "ManagedIdentityResourceId": {
+      "type": "string",
+      "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId]"
+    }
+  }
+}

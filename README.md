@@ -38,6 +38,13 @@ which stay in the dedicated IP playbook. See [`README-ACCOUNT.md`](README-ACCOUN
 All six playbooks — IP, device, URL, file hash, email, and account — are independent and can all be
 attached to the same incident automation rule.
 
+Beyond those six read-only enrichment playbooks, this repo also has four **response**
+(remediation) playbooks that write to Entra ID or Defender for Endpoint — revoke sessions, reset a
+password, disable an account, confirm compromised, isolate a device, run an AV scan, and an
+assisted email sender-block. These are a different trust category (they act, not just report) and
+are deliberately not wired to any automation rule — see [`README-RESPONSE.md`](README-RESPONSE.md)
+before deploying any of them.
+
 ## Deploy all six in one go
 
 `azuredeploy-all.json` deploys all six playbooks as one ARM deployment (each as a nested
@@ -232,6 +239,17 @@ build_master_template.py                   generator for the combined template
 
 azuredeploy-automation-rules.json          optional: six entity-conditional automation rules
 build_automation_rules_template.py         generator for the automation rules template
+
+azuredeploy-response-account-contain.json    response: revoke sessions / reset password (Account)
+azuredeploy-response-account-disable.json    response: disable account / confirm compromised (Account)
+azuredeploy-response-device-contain.json     response: isolate device / run AV scan (Host)
+azuredeploy-response-email-block.json        response: assisted sender block / quarantine (Mail message)
+build_response_account_contain.py            generator for the account revoke+reset template
+build_response_account_disable.py            generator for the account disable+confirm template
+build_response_device_contain.py             generator for the device isolate+scan template
+build_response_email_block.py                generator for the email block-assist template
+response_common.py                           shared WDL helpers for the four response playbooks
+README-RESPONSE.md                           response playbook safety model, permissions, deployment
 ```
 
 ## Deploy (about 10 minutes)
