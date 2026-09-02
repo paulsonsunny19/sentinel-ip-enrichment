@@ -146,7 +146,7 @@ union TI, ClientContext, Alerts
 
 
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap"
-TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top"
+TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;"
 TBL = "border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%"
 H4 = "margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px"
 CHIP = "display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;color:#ffffff;margin-left:6px;background:"
@@ -210,7 +210,7 @@ RISK_ROW = (
     "string(coalesce(variables('RiskJson')?['riskDetail'], 'n/a')), ' &nbsp;|&nbsp; events: ', "
     "string(length(variables('RiskDetectionsJson'))), "
     "if(greater(length(variables('RiskDetectionsJson')), 0), "
-    "concat(' &nbsp;|&nbsp; recent: ', string(variables('RiskDetectionsJson'))), ''), "
+    "concat(' &nbsp;|&nbsp; recent:<br>', replace(string(variables('RiskDetectionsJson')), '},{', '}<br>{')), ''), "
     "'</td></tr>'), "
     "concat('<tr><th style=\"" + TH + "\">Identity risk</th><td style=\"" + TD + "\" colspan=\"3\">', variables('RiskStatus'), '</td></tr>'))"
 )
