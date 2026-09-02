@@ -11,15 +11,18 @@ README-RESPONSE.md for the sources). So this playbook always composes the
 exact PowerShell command(s) and posts them to the incident comment for an
 analyst to run.
 
-If you've deployed azuredeploy-automation-account-response.json and
-published runbooks/Set-ErgoSOC-TenantBlockListItem.ps1 into it (see
+If you've deployed azuredeploy-automation-account-response.json (assigned
+a DEDICATED user-assigned managed identity -- deliberately separate from
+the UAMI the rest of this repo's playbooks share, to keep its Exchange
+Online write access isolated) and published
+runbooks/Set-ErgoSOC-TenantBlockListItem.ps1 into it (see
 README-RESPONSE.md), you can additionally set AutoExecuteBlock=true and
-fill in AutomationAccountResourceId/ExoAppId/ExoOrganization to have this
-playbook actually submit the block as an Automation job, not just compose
-the command. That default stays OFF -- turning it on is a deliberate,
-separate decision from deploying the playbook itself, since it's a bigger
-trust escalation (a cert-authenticated app that can write to your tenant's
-mail flow) than everything else in this repo.
+fill in AutomationAccountResourceId/ExoManagedIdentityClientId/
+ExoOrganization to have this playbook actually submit the block as an
+Automation job, not just compose the command. That default stays OFF --
+turning it on is a deliberate, separate decision from deploying the
+playbook itself, since it's a bigger trust escalation (something that can
+write to your tenant's mail flow) than everything else in this repo.
 
 The job submission is fire-and-forget (the Automation Job REST API is
 asynchronous) -- the comment reports the job ID and tells you to check the
@@ -105,9 +108,8 @@ def submit_job_action(suffix, value_expr):
                     "properties": {
                         "runbook": {"name": "@{parameters('RunbookName')}"},
                         "parameters": {
-                            "AppId": "@{parameters('ExoAppId')}",
+                            "ManagedIdentityClientId": "@{parameters('ExoManagedIdentityClientId')}",
                             "Organization": "@{parameters('ExoOrganization')}",
-                            "CertificateAssetName": "@{parameters('ExoCertificateAssetName')}",
                             "Value": f"@{{{value_expr}}}",
                             "EntryType": "Sender",
                             "Action": "Block",
@@ -131,9 +133,8 @@ def build_definition():
             "AutoExecuteBlock": {"type": "Bool", "defaultValue": False},
             "AutomationAccountResourceId": {"type": "String", "defaultValue": ""},
             "RunbookName": {"type": "String", "defaultValue": "Set-ErgoSOC-TenantBlockListItem"},
-            "ExoAppId": {"type": "String", "defaultValue": ""},
+            "ExoManagedIdentityClientId": {"type": "String", "defaultValue": ""},
             "ExoOrganization": {"type": "String", "defaultValue": ""},
-            "ExoCertificateAssetName": {"type": "String", "defaultValue": "ErgoSOC-EXO-Cert"},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -356,11 +357,11 @@ def build_template():
         "metadata": {
             "title": "Response: block sender/domain (assisted by default, optional auto-execute) and quarantine pointer for Mail message entities",
             "description": "For each Mail message entity on a Microsoft Sentinel incident, composes the exact Exchange Online PowerShell command(s) to block the sender/domain and the search values needed to find and remove the message in Microsoft Defender Threat Explorer, and posts them to the incident comment. If AutoExecuteBlock is set to true and an Automation Account (running runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) is configured, it additionally submits the block as an Automation job -- otherwise it only composes the command for an analyst to run. Not wired to an automation rule.",
-            "prerequisites": "One existing user-assigned managed identity with Microsoft Sentinel Responder. If using AutoExecuteBlock, also: an Automation Account (azuredeploy-automation-account-response.json) with the runbook published, Automation Job Operator Azure RBAC on that Automation Account for the UAMI, and an Entra app registration with a certificate and an Exchange Online RBAC role for the runbook itself -- see README-RESPONSE.md.",
+            "prerequisites": "One existing user-assigned managed identity with Microsoft Sentinel Responder (this is the Logic App's own identity). If using AutoExecuteBlock, also: an Automation Account (azuredeploy-automation-account-response.json) assigned a SEPARATE dedicated managed identity with the runbook published, Automation Job Operator Azure RBAC on that Automation Account for the Logic App's UAMI, and that Automation Account's own identity registered as an Exchange Online service principal with a scoped role -- see README-RESPONSE.md.",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
                 "Authorise the Microsoft Sentinel API connection.",
-                "Leave AutoExecuteBlock=false (the default) to stay assisted-only. To enable auto-execution, complete the Automation Account / app registration / EXO RBAC setup in README-RESPONSE.md first, then redeploy with AutoExecuteBlock=true and the Automation Account / Exo* parameters filled in.",
+                "Leave AutoExecuteBlock=false (the default) to stay assisted-only. To enable auto-execution, complete the Automation Account / dedicated identity / EXO RBAC setup in README-RESPONSE.md first, then redeploy with AutoExecuteBlock=true and the Automation Account / Exo* parameters filled in.",
             ],
             "lastUpdateTime": "2026-09-02",
             "entities": ["MailMessage"],
@@ -389,17 +390,13 @@ def build_template():
                 "type": "string", "defaultValue": "Set-ErgoSOC-TenantBlockListItem",
                 "metadata": {"description": "Name of the published runbook (runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) in the Automation Account."},
             },
-            "ExoAppId": {
+            "ExoManagedIdentityClientId": {
                 "type": "string", "defaultValue": "",
-                "metadata": {"description": "Application (client) ID of the Entra app registration used for app-only Exchange Online auth by the runbook. Required only if AutoExecuteBlock is true."},
+                "metadata": {"description": "Client (application) ID of the DEDICATED managed identity assigned to the Automation Account (the ManagedIdentityClientId output of azuredeploy-automation-account-response.json) -- deliberately a separate identity from this playbook's own UserAssignedManagedIdentityResourceId, so Exchange Online write access stays isolated. Required only if AutoExecuteBlock is true."},
             },
             "ExoOrganization": {
                 "type": "string", "defaultValue": "",
                 "metadata": {"description": "Tenant's *.onmicrosoft.com domain, passed to Connect-ExchangeOnline. Required only if AutoExecuteBlock is true."},
-            },
-            "ExoCertificateAssetName": {
-                "type": "string", "defaultValue": "ErgoSOC-EXO-Cert",
-                "metadata": {"description": "Name of the Automation Account certificate asset holding the app's private key."},
             },
         },
         "variables": {
@@ -416,9 +413,8 @@ def build_template():
                     "AutoExecuteBlock": {"value": "[parameters('AutoExecuteBlock')]"},
                     "AutomationAccountResourceId": {"value": "[parameters('AutomationAccountResourceId')]"},
                     "RunbookName": {"value": "[parameters('RunbookName')]"},
-                    "ExoAppId": {"value": "[parameters('ExoAppId')]"},
+                    "ExoManagedIdentityClientId": {"value": "[parameters('ExoManagedIdentityClientId')]"},
                     "ExoOrganization": {"value": "[parameters('ExoOrganization')]"},
-                    "ExoCertificateAssetName": {"value": "[parameters('ExoCertificateAssetName')]"},
                 },
             ),
         ],

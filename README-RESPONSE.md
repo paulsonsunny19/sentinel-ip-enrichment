@@ -83,7 +83,8 @@ done
 | Device: isolate, scan, restrict | `AdvancedQuery.Read.All` (machine ID lookup) | Microsoft Graph |
 | Device: isolate, scan, restrict | `Machine.Isolate`, `Machine.Scan`, `Machine.RestrictExecution` | **WindowsDefenderATP** (a *different* enterprise app, ID `fc780465-2017-40d4-a0c5-307022471b92`) |
 | Email: block + quarantine (assisted mode) | none | — no write call made |
-| Email: block + quarantine (auto-execute mode) | `Automation Job Operator` Azure RBAC role on the Automation Account | Azure Resource Manager, not Graph |
+| Email: block + quarantine (auto-execute mode) — Logic App's own UAMI | `Automation Job Operator` Azure RBAC role, scoped to the Automation Account | Azure Resource Manager, not Graph |
+| Email: block + quarantine (auto-execute mode) — Automation Account's dedicated identity | `Tenant AllowBlockList Manager` role group | **Exchange Online's own RBAC**, not Azure RBAC or a Graph app role |
 | FileHash: block indicator | `ThreatIndicators.ReadWrite.OwnedBy` | Microsoft Graph |
 | IP/URL: block indicator | `ThreatIndicators.ReadWrite.OwnedBy` | Microsoft Graph |
 
@@ -123,18 +124,38 @@ analyst to run.
 
 ### Optional: auto-execute the block via an Automation Account
 
-If you want this actually automated, this repo includes the infrastructure for it:
+If you want this actually automated, this repo includes the infrastructure for it. **Two separate
+identities are involved, deliberately** — the Logic App's own UAMI (shared with the rest of this
+repo) only ever gets permission to *start a job*; a second, dedicated UAMI is what the runbook
+authenticates to Exchange Online as, so that one identity's tenant-wide mail-write access stays
+isolated from everything else this repo's playbooks can touch.
 
-1. **Deploy the Automation Account.**
+1. **Create the dedicated identity** for the Automation Account (not the shared one):
+   ```bash
+   EXO_UAMI_ID=$(az identity create \
+     --resource-group "$SENTINEL_RG" \
+     --name ErgoSOC-AU-EXO-Automation-Identity \
+     --query id -o tsv)
+   ```
+
+2. **Deploy the Automation Account, assigned that dedicated identity.**
    ```bash
    az deployment group create \
      --name sentinel-response-automation \
      --resource-group "$SENTINEL_RG" \
-     --template-file azuredeploy-automation-account-response.json
+     --template-file azuredeploy-automation-account-response.json \
+     --parameters UserAssignedManagedIdentityResourceId="$EXO_UAMI_ID"
    ```
-   This creates the Automation Account, imports the `ExchangeOnlineManagement` PowerShell module,
-   and creates an empty runbook resource. ARM can't reliably inline multi-line PowerShell as JSON,
-   so the runbook's actual content is published separately:
+   This creates the Automation Account (with that identity attached), imports the
+   `ExchangeOnlineManagement` PowerShell module, and creates an empty runbook resource. Grab the
+   identity's client ID from the deployment output — you'll need it in steps 3 and 5:
+   ```bash
+   EXO_CLIENT_ID=$(az deployment group show \
+     --resource-group "$SENTINEL_RG" --name sentinel-response-automation \
+     --query properties.outputs.managedIdentityClientId.value -o tsv)
+   ```
+   ARM can't reliably inline multi-line PowerShell as JSON, so the runbook's actual content is
+   published separately:
    ```bash
    az automation runbook replace-content \
      --resource-group "$SENTINEL_RG" \
@@ -147,46 +168,29 @@ If you want this actually automated, this repo includes the infrastructure for i
      --name Set-ErgoSOC-TenantBlockListItem
    ```
 
-2. **Set up app-only Exchange Online auth.** The runbook connects as an Entra app registration
-   using a certificate, not a delegated user — this is the credential-bearing part that has no
-   business being ARM-templated (a private key must never end up in a template or in git).
-   ```bash
-   # Create a self-signed cert and the app registration
-   openssl req -x509 -newkey rsa:2048 -keyout exo-key.pem -out exo-cert.pem -days 730 -nodes \
-     -subj "/CN=ErgoSOC-AU-EXO-Automation"
-   openssl pkcs12 -export -out exo-cert.pfx -inkey exo-key.pem -in exo-cert.pem -passout pass:
-
-   EXO_APP_ID=$(az ad app create --display-name "ErgoSOC-AU-EXO-Automation" \
-     --query appId -o tsv)
-   az ad app credential reset --id "$EXO_APP_ID" --cert @exo-cert.pem --append
-
-   # Upload the private key (PFX) as an Automation Account certificate asset
-   az automation certificate create \
-     --resource-group "$SENTINEL_RG" \
-     --automation-account-name ErgoSOC-AU-ResponseAutomation \
-     --name ErgoSOC-EXO-Cert \
-     --path exo-cert.pfx \
-     --exportable false
-   ```
-   Grant the app registration the **`Exchange.ManageAsApp`** API permission on the "Office 365
-   Exchange Online" API (admin consent required), then in Exchange Online PowerShell (as a Global
-   or Exchange admin), register it as a service principal and give it a role scoped to just the
-   allow/block list — do not grant it Organization Management:
+3. **Register the dedicated identity in Exchange Online and grant it a scoped role.** No
+   certificate, no app registration — the runbook connects as this identity directly
+   (`Connect-ExchangeOnline -ManagedIdentity`). Exchange Online has its own separate RBAC system
+   from Azure/Graph, so this is a one-time step run interactively by a Global or Exchange admin.
+   Give it a role scoped to just the allow/block list — do not grant it Organization Management:
    ```powershell
    Connect-ExchangeOnline
-   New-ServicePrincipal -AppId $EXO_APP_ID -ObjectId <app registration's object ID> `
-     -DisplayName "ErgoSOC-AU-EXO-Automation"
+   New-ServicePrincipal -AppId $EXO_CLIENT_ID -ObjectId <the dedicated identity's principal ID> `
+     -DisplayName "ErgoSOC-AU-EXO-Automation-Identity"
    New-RoleGroup -Name "ErgoSOC-AU-TABL-Managers" `
-     -Roles "Tenant AllowBlockList Manager" -Members "ErgoSOC-AU-EXO-Automation"
+     -Roles "Tenant AllowBlockList Manager" -Members "ErgoSOC-AU-EXO-Automation-Identity"
    ```
+   (Get the identity's principal/object ID with
+   `az identity show --ids "$EXO_UAMI_ID" --query principalId -o tsv`.)
 
-3. **Grant the UAMI permission to start jobs on the Automation Account** (see the Automation Job
-   Operator command above).
+4. **Grant the Logic App's (shared) UAMI permission to start jobs on the Automation Account** (see
+   the Automation Job Operator command earlier in this file).
 
-4. **Redeploy `azuredeploy-response-email-block.json`** with `AutoExecuteBlock=true` and the
-   `AutomationAccountResourceId`/`ExoAppId`/`ExoOrganization` parameters filled in. Leave
-   `AutoExecuteBlock=false` (the default) if you'd rather keep it assisted-only — nothing changes
-   about the playbook's existing behavior until you explicitly turn it on.
+5. **Redeploy `azuredeploy-response-email-block.json`** with `AutoExecuteBlock=true` and the
+   `AutomationAccountResourceId`/`ExoManagedIdentityClientId` (= `$EXO_CLIENT_ID`)/`ExoOrganization`
+   parameters filled in. Leave `AutoExecuteBlock=false` (the default) if you'd rather keep it
+   assisted-only — nothing changes about the playbook's existing behavior until you explicitly turn
+   it on.
 
 Once enabled, the playbook submits the block as an Automation job (fire-and-forget — the Job API
 is asynchronous) and reports the job ID in the incident comment; check the Automation Account's

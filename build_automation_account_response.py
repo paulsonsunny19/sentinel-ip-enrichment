@@ -15,11 +15,19 @@ README-RESPONSE.md (az automation runbook replace-content + publish),
 same pattern as the "authorise the API connection" one-time step every
 other playbook in this repo already needs.
 
-This template does NOT create the Entra app registration or certificate
-the runbook needs for Exchange Online app-only auth -- that's a
-credential-bearing step that has no business being ARM-templated (a
-private key must never end up in a template or in git). See
-README-RESPONSE.md for those steps.
+The Automation Account is assigned the SAME user-assigned managed
+identity used by the rest of this repo's playbooks (reused, not a
+dedicated one -- a deliberate choice: it keeps things simple at the cost
+of that one identity spanning Entra ID, Defender for Endpoint, ARM, and
+(once you grant it the Exchange Online role below) Exchange Online too).
+The runbook authenticates to Exchange Online AS that identity via
+Connect-ExchangeOnline -ManagedIdentity -- no certificate, no separate
+app registration, no private key to generate or store. You still have to
+register the UAMI as an Exchange Online service principal and grant it a
+scoped role there; that's Exchange Online's own RBAC system and has
+nothing to do with Azure RBAC or Graph app roles, so it can't be
+ARM-templated either -- see README-RESPONSE.md for the one-time EXO
+PowerShell steps.
 """
 import pathlib
 
@@ -34,12 +42,22 @@ def build_template():
         "contentVersion": "1.0.0.0",
         "metadata": {
             "title": "ErgoSOC-AU response infrastructure: Automation Account for Exchange Online actions",
-            "description": "Deploys an Azure Automation Account, the ExchangeOnlineManagement module, and an empty PowerShell 7.2 runbook that ErgoSOC-AU-Email-BlockSenderAndQuarantine's AutoExecuteBlock mode calls to actually write to the Tenant Allow/Block List. Publish the runbook's content (runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) and set up the app-only Exchange Online auth per README-RESPONSE.md before turning AutoExecuteBlock on.",
+            "description": "Deploys an Azure Automation Account (assigned the same UAMI as the rest of this repo's playbooks), the ExchangeOnlineManagement module, and an empty PowerShell 7.2 runbook that ErgoSOC-AU-Email-BlockSenderAndQuarantine's AutoExecuteBlock mode calls to actually write to the Tenant Allow/Block List. Publish the runbook's content (runbooks/Set-ErgoSOC-TenantBlockListItem.ps1) and register the UAMI as an Exchange Online service principal per README-RESPONSE.md before turning AutoExecuteBlock on.",
+            "prerequisites": "The same existing user-assigned managed identity used elsewhere in this repo.",
+            "postDeployment": [
+                "Publish the runbook content: az automation runbook replace-content + az automation runbook publish (see README-RESPONSE.md).",
+                "Register the UAMI as an Exchange Online service principal and grant it a role scoped to the Tenant Allow/Block List (EXO PowerShell, one-time, run by an admin -- see README-RESPONSE.md).",
+                "Grant the same UAMI the Automation Job Operator Azure RBAC role scoped to this Automation Account, so the email playbook can start runbook jobs.",
+            ],
             "lastUpdateTime": "2026-09-02",
             "tags": ["Response", "Email", "Automation Account", "Exchange Online"],
             "support": {"tier": "community"},
         },
         "parameters": {
+            "UserAssignedManagedIdentityResourceId": {
+                "type": "string", "minLength": 1,
+                "metadata": {"description": "Required. Full resource ID of the existing user-assigned managed identity to assign to the Automation Account (the same one used by the rest of this repo's playbooks, unless you've deliberately created a dedicated one)."},
+            },
             "AutomationAccountName": {
                 "type": "string", "defaultValue": "ErgoSOC-AU-ResponseAutomation",
                 "metadata": {"description": "Name of the Azure Automation Account to create."},
@@ -55,6 +73,10 @@ def build_template():
                 "apiVersion": "2023-11-01",
                 "name": "[parameters('AutomationAccountName')]",
                 "location": "[resourceGroup().location]",
+                "identity": {
+                    "type": "UserAssigned",
+                    "userAssignedIdentities": {"[parameters('UserAssignedManagedIdentityResourceId')]": {}},
+                },
                 "properties": {"sku": {"name": "Basic"}},
             },
             {
@@ -89,6 +111,11 @@ def build_template():
                 "value": "[resourceId('Microsoft.Automation/automationAccounts', parameters('AutomationAccountName'))]",
             },
             "RunbookName": {"type": "string", "value": "[parameters('RunbookName')]"},
+            "ManagedIdentityClientId": {
+                "type": "string",
+                "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').clientId]",
+                "metadata": {"description": "The UAMI's client (application) ID -- pass this as ExoManagedIdentityClientId when deploying the email playbook, and use it in New-ServicePrincipal -AppId when registering it in Exchange Online."},
+            },
         },
     }
 

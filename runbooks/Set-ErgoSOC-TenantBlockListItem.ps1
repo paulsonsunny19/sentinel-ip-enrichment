@@ -11,21 +11,23 @@
     Logic App calls (via the Azure Automation Job REST API) when
     AutoExecuteBlock is turned on for that playbook.
 
-    Authenticates app-only via a certificate stored as an Automation Account
-    certificate asset -- see README-RESPONSE.md for the one-time app
-    registration / certificate / EXO role-group setup this depends on.
+    Authenticates to Exchange Online as the Automation Account's own
+    user-assigned managed identity (Connect-ExchangeOnline -ManagedIdentity) --
+    no certificate, no separate app registration, no private key to generate
+    or store. That identity still has to be registered as an Exchange Online
+    service principal and granted a scoped role there first; see
+    README-RESPONSE.md for the one-time EXO PowerShell steps.
 
-.PARAMETER AppId
-    Application (client) ID of the Entra app registration granted the
-    Exchange.ManageAsApp API permission and an Exchange Online RBAC role
-    scoped to Tenant Allow/Block List management.
+.PARAMETER ManagedIdentityClientId
+    Client (application) ID of the user-assigned managed identity to connect
+    as. Required whenever more than one identity could be in scope (which is
+    always true here, since the Automation Account is assigned the same UAMI
+    used by every other playbook in this repo) -- Connect-ExchangeOnline
+    -ManagedIdentity alone would otherwise be ambiguous about which identity
+    to use.
 
 .PARAMETER Organization
     Tenant's *.onmicrosoft.com domain, e.g. contoso.onmicrosoft.com.
-
-.PARAMETER CertificateAssetName
-    Name of the Automation Account certificate asset holding the app's
-    private key (uploaded once via az automation certificate create).
 
 .PARAMETER Value
     The sender address or domain to act on.
@@ -37,9 +39,8 @@
     'Block' (default) or 'Allow'.
 #>
 param(
-    [Parameter(Mandatory)][string]$AppId,
+    [Parameter(Mandatory)][string]$ManagedIdentityClientId,
     [Parameter(Mandatory)][string]$Organization,
-    [Parameter(Mandatory)][string]$CertificateAssetName,
     [Parameter(Mandatory)][string]$Value,
     [ValidateSet('Sender')][string]$EntryType = 'Sender',
     [ValidateSet('Block', 'Allow')][string]$Action = 'Block'
@@ -48,13 +49,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
 
-$cert = Get-AutomationCertificate -Name $CertificateAssetName
-if (-not $cert) {
-    throw "Automation certificate asset '$CertificateAssetName' not found. See README-RESPONSE.md for how to upload it."
-}
-
-Write-Output "Connecting to Exchange Online as app '$AppId' against '$Organization'..."
-Connect-ExchangeOnline -AppId $AppId -Certificate $cert -Organization $Organization -ShowBanner:$false
+Write-Output "Connecting to Exchange Online as managed identity '$ManagedIdentityClientId' against '$Organization'..."
+Connect-ExchangeOnline -ManagedIdentity -ManagedIdentityAccountId $ManagedIdentityClientId `
+    -Organization $Organization -ShowBanner:$false
 
 try {
     $params = @{
