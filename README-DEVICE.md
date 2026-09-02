@@ -141,8 +141,8 @@ testing.
 
 Open **Logic App → API connections** and authorize/save both generated connections:
 
-- `MicrosoftSentinel-Enrich-Device-IncidentComment`
-- `AzureMonitorLogs-Enrich-Device-IncidentComment`
+- `MicrosoftSentinel-ErgoSOC-AU-Device-Enrichment`
+- `AzureMonitorLogs-ErgoSOC-AU-Device-Enrichment`
 
 The Sentinel connection uses the connector's managed-identity alternative parameters. The Azure
 Monitor Logs connection uses `managedIdentityAuth`; it intentionally does not use
@@ -157,7 +157,7 @@ on the playbook resource group to the Sentinel service identity when the portal 
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `PlaybookName` | `Enrich-Device-IncidentComment` | Logic App name |
+| `PlaybookName` | `ErgoSOC-AU-Device-Enrichment` | Logic App name |
 | `UserAssignedManagedIdentityResourceId` | required | full resource ID of one existing client-owned UAMI; the template never enables a system-assigned identity |
 | `WorkspaceName` | required | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current deployment scope | change for a cross-scope workspace |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generates azuredeploy.json for the Enrich-IP-IncidentComment Sentinel playbook."""
+"""Generates azuredeploy.json for the ErgoSOC-AU-IP-Enrichment Sentinel playbook."""
 import json, pathlib
 
 
@@ -1071,7 +1071,7 @@ template = {
         "support": {"tier": "community"},
     },
     "parameters": {
-        "PlaybookName": {"type": "string", "defaultValue": "Enrich-IP-IncidentComment",
+        "PlaybookName": {"type": "string", "defaultValue": "ErgoSOC-AU-IP-Enrichment",
                          "metadata": {"description": "Name of the Logic App playbook."}},
         "UserAssignedManagedIdentityResourceId": {
             "type": "string",

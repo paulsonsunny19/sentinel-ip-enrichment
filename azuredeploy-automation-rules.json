@@ -10,7 +10,7 @@
     },
     "IPPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-IP-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-IP-Enrichment",
       "metadata": {
         "description": "Name of the deployed IP address enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
       }
@@ -24,7 +24,7 @@
     },
     "DevicePlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Device-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Device-Enrichment",
       "metadata": {
         "description": "Name of the deployed host enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
       }
@@ -38,7 +38,7 @@
     },
     "UrlPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-URL-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-URL-Enrichment",
       "metadata": {
         "description": "Name of the deployed URL enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
       }
@@ -52,7 +52,7 @@
     },
     "FileHashPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-FileHash-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-FileHash-Enrichment",
       "metadata": {
         "description": "Name of the deployed file hash enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
       }
@@ -66,7 +66,7 @@
     },
     "EmailPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Email-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Email-Enrichment",
       "metadata": {
         "description": "Name of the deployed mail message enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
       }
@@ -80,7 +80,7 @@
     },
     "AccountPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Account-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Account-Enrichment",
       "metadata": {
         "description": "Name of the deployed account enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
       }

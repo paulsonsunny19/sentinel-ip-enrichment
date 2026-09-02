@@ -30,7 +30,7 @@
   "parameters": {
     "PlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Email-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Email-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }

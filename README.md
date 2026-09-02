@@ -137,12 +137,12 @@ own standalone default name and only need overriding if you deployed under a cus
 
 | Incident has entity... | Condition (category → property) | Operator | Value | Run playbook |
 |---|---|---|---|---|
-| IP address | Entity → IP address → Address | Contains | *(blank)* | `Enrich-IP-IncidentComment` |
-| Host | Entity → Host → Host name | Contains | *(blank)* | `Enrich-Device-IncidentComment` |
-| URL / domain name | Entity → URL → Url | Contains | *(blank)* | `Enrich-URL-IncidentComment` |
-| File hash | Entity → File hash → Value | Contains | *(blank)* | `Enrich-FileHash-IncidentComment` |
-| Mail message | Entity → Mail message → Recipient | Contains | *(blank)* | `Enrich-Email-IncidentComment` |
-| Account | Entity → Account → AAD user ID (or Name) | Contains | *(blank)* | `Enrich-Account-IncidentComment` |
+| IP address | Entity → IP address → Address | Contains | *(blank)* | `ErgoSOC-AU-IP-Enrichment` |
+| Host | Entity → Host → Host name | Contains | *(blank)* | `ErgoSOC-AU-Device-Enrichment` |
+| URL / domain name | Entity → URL → Url | Contains | *(blank)* | `ErgoSOC-AU-URL-Enrichment` |
+| File hash | Entity → File hash → Value | Contains | *(blank)* | `ErgoSOC-AU-FileHash-Enrichment` |
+| Mail message | Entity → Mail message → Recipient | Contains | *(blank)* | `ErgoSOC-AU-Email-Enrichment` |
+| Account | Entity → Account → AAD user ID (or Name) | Contains | *(blank)* | `ErgoSOC-AU-Account-Enrichment` |
 
 *(Mail message entities have no "network message ID" condition property in the automation rule
 engine, so Recipient is used as the existence check instead — every mail message entity has at
@@ -340,7 +340,7 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `PlaybookName` | `Enrich-IP-IncidentComment` | |
+| `PlaybookName` | `ErgoSOC-AU-IP-Enrichment` | |
 | `UserAssignedManagedIdentityResourceId` | *(required)* | full resource ID of one existing client-owned UAMI; the template never enables a system-assigned identity |
 | `WorkspaceName` | *(required)* | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current | set if the workspace lives elsewhere |

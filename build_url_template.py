@@ -1120,7 +1120,7 @@ template = {
     },
     "parameters": {
         "PlaybookName": {
-            "type": "string", "defaultValue": "Enrich-URL-IncidentComment",
+            "type": "string", "defaultValue": "ErgoSOC-AU-URL-Enrichment",
             "metadata": {"description": "Name of the Logic App playbook."},
         },
         "UserAssignedManagedIdentityResourceId": {

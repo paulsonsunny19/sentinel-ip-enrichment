@@ -29,7 +29,7 @@
   "parameters": {
     "PlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Device-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Device-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }

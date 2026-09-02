@@ -596,7 +596,7 @@ template = {
     },
     "parameters": {
         "PlaybookName": {
-            "type": "string", "defaultValue": "Enrich-FileHash-IncidentComment",
+            "type": "string", "defaultValue": "ErgoSOC-AU-FileHash-Enrichment",
             "metadata": {"description": "Name of the Logic App playbook."},
         },
         "UserAssignedManagedIdentityResourceId": {

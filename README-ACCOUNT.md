@@ -137,7 +137,7 @@ incidents are created or updated.
 
 | Parameter | Default | Notes |
 |---|---:|---|
-| `PlaybookName` | `Enrich-Account-IncidentComment` | Logic App name |
+| `PlaybookName` | `ErgoSOC-AU-Account-Enrichment` | Logic App name |
 | `UserAssignedManagedIdentityResourceId` | required | Full resource ID of the existing UAMI |
 | `WorkspaceName` | required | Sentinel/Log Analytics workspace |
 | `WorkspaceResourceGroup` | deployment RG | Override when the workspace is in another RG |

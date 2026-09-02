@@ -137,7 +137,7 @@ triage automation rule.
 
 | Parameter | Default | Notes |
 |---|---:|---|
-| `PlaybookName` | `Enrich-Email-IncidentComment` | Logic App name |
+| `PlaybookName` | `ErgoSOC-AU-Email-Enrichment` | Logic App name |
 | `UserAssignedManagedIdentityResourceId` | required | Full resource ID of the existing UAMI |
 | `WorkspaceName` | required | Sentinel/Log Analytics workspace |
 | `WorkspaceResourceGroup` | deployment RG | Override when the workspace is in another RG |

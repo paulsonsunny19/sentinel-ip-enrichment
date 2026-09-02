@@ -40,12 +40,12 @@ HERE = Path(__file__).resolve().parent
 
 # (key, display label, default playbook name, condition property, rule order)
 RULES = [
-    ("IP", "IP address", "Enrich-IP-IncidentComment", "IPAddress", 1),
-    ("Device", "host", "Enrich-Device-IncidentComment", "HostName", 2),
-    ("Url", "URL", "Enrich-URL-IncidentComment", "Url", 3),
-    ("FileHash", "file hash", "Enrich-FileHash-IncidentComment", "FileHashValue", 4),
-    ("Email", "mail message", "Enrich-Email-IncidentComment", "MailMessageRecipient", 5),
-    ("Account", "account", "Enrich-Account-IncidentComment", "AccountAadUserId", 6),
+    ("IP", "IP address", "ErgoSOC-AU-IP-Enrichment", "IPAddress", 1),
+    ("Device", "host", "ErgoSOC-AU-Device-Enrichment", "HostName", 2),
+    ("Url", "URL", "ErgoSOC-AU-URL-Enrichment", "Url", 3),
+    ("FileHash", "file hash", "ErgoSOC-AU-FileHash-Enrichment", "FileHashValue", 4),
+    ("Email", "mail message", "ErgoSOC-AU-Email-Enrichment", "MailMessageRecipient", 5),
+    ("Account", "account", "ErgoSOC-AU-Account-Enrichment", "AccountAadUserId", 6),
 ]
 
 API_VERSION = "2023-02-01-preview"

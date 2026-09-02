@@ -63,7 +63,7 @@
     },
     "IPPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-IP-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-IP-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }
@@ -137,7 +137,7 @@
     },
     "DevicePlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Device-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Device-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }
@@ -151,7 +151,7 @@
     },
     "UrlPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-URL-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-URL-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }
@@ -207,7 +207,7 @@
     },
     "FileHashPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-FileHash-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-FileHash-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }
@@ -221,7 +221,7 @@
     },
     "EmailPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Email-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Email-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }
@@ -235,7 +235,7 @@
     },
     "AccountPlaybookName": {
       "type": "string",
-      "defaultValue": "Enrich-Account-IncidentComment",
+      "defaultValue": "ErgoSOC-AU-Account-Enrichment",
       "metadata": {
         "description": "Name of the Logic App playbook."
       }
@@ -330,7 +330,7 @@
           "parameters": {
             "PlaybookName": {
               "type": "string",
-              "defaultValue": "Enrich-IP-IncidentComment",
+              "defaultValue": "ErgoSOC-AU-IP-Enrichment",
               "metadata": {
                 "description": "Name of the Logic App playbook."
               }
@@ -1763,7 +1763,7 @@
           "parameters": {
             "PlaybookName": {
               "type": "string",
-              "defaultValue": "Enrich-Device-IncidentComment",
+              "defaultValue": "ErgoSOC-AU-Device-Enrichment",
               "metadata": {
                 "description": "Name of the Logic App playbook."
               }
@@ -2482,7 +2482,7 @@
           "parameters": {
             "PlaybookName": {
               "type": "string",
-              "defaultValue": "Enrich-URL-IncidentComment",
+              "defaultValue": "ErgoSOC-AU-URL-Enrichment",
               "metadata": {
                 "description": "Name of the Logic App playbook."
               }
@@ -4434,7 +4434,7 @@
           "parameters": {
             "PlaybookName": {
               "type": "string",
-              "defaultValue": "Enrich-FileHash-IncidentComment",
+              "defaultValue": "ErgoSOC-AU-FileHash-Enrichment",
               "metadata": {
                 "description": "Name of the Logic App playbook."
               }
@@ -5144,7 +5144,7 @@
           "parameters": {
             "PlaybookName": {
               "type": "string",
-              "defaultValue": "Enrich-Email-IncidentComment",
+              "defaultValue": "ErgoSOC-AU-Email-Enrichment",
               "metadata": {
                 "description": "Name of the Logic App playbook."
               }
@@ -6194,7 +6194,7 @@
           "parameters": {
             "PlaybookName": {
               "type": "string",
-              "defaultValue": "Enrich-Account-IncidentComment",
+              "defaultValue": "ErgoSOC-AU-Account-Enrichment",
               "metadata": {
                 "description": "Name of the Logic App playbook."
               }
