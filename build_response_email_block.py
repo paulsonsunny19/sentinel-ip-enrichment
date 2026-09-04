@@ -113,6 +113,10 @@ def submit_job_action(suffix, value_expr):
                             "Value": f"@{{{value_expr}}}",
                             "EntryType": "Sender",
                             "Action": "Block",
+                            "Notes": (
+                                "@{concat('Blocked by ErgoSOC-AU response playbook -- Sentinel incident #', "
+                                "string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
+                            ),
                         },
                     }
                 },

@@ -37,13 +37,20 @@
 
 .PARAMETER Action
     'Block' (default) or 'Allow'.
+
+.PARAMETER Notes
+    Optional free-text note attached to the block-list entry (visible in the
+    Exchange admin center's Tenant Allow/Block List). The calling playbook
+    passes the Sentinel incident number here so anyone reviewing the list
+    later can trace an entry back to the incident that caused it.
 #>
 param(
     [Parameter(Mandatory)][string]$ManagedIdentityClientId,
     [Parameter(Mandatory)][string]$Organization,
     [Parameter(Mandatory)][string]$Value,
     [ValidateSet('Sender')][string]$EntryType = 'Sender',
-    [ValidateSet('Block', 'Allow')][string]$Action = 'Block'
+    [ValidateSet('Block', 'Allow')][string]$Action = 'Block',
+    [string]$Notes = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,8 +67,9 @@ try {
         NoExpiration = $true
     }
     if ($Action -eq 'Block') { $params['Block'] = $true } else { $params['Allow'] = $true }
+    if ($Notes) { $params['Notes'] = $Notes }
 
-    Write-Output "Applying: New-TenantAllowBlockListItems -ListType $EntryType -$Action -Entries '$Value' -NoExpiration"
+    Write-Output "Applying: New-TenantAllowBlockListItems -ListType $EntryType -$Action -Entries '$Value' -NoExpiration$(if ($Notes) { " -Notes '$Notes'" })"
     New-TenantAllowBlockListItems @params
 
     Write-Output "OK: $Action $EntryType entry created for '$Value'."

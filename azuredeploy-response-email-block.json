@@ -434,7 +434,8 @@
                               "Organization": "@{parameters('ExoOrganization')}",
                               "Value": "@{outputs('Compose_SenderDomain')}",
                               "EntryType": "Sender",
-                              "Action": "Block"
+                              "Action": "Block",
+                              "Notes": "@{concat('Blocked by ErgoSOC-AU response playbook -- Sentinel incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
                             }
                           }
                         }
@@ -533,7 +534,8 @@
                               "Organization": "@{parameters('ExoOrganization')}",
                               "Value": "@{outputs('Compose_Sender')}",
                               "EntryType": "Sender",
-                              "Action": "Block"
+                              "Action": "Block",
+                              "Notes": "@{concat('Blocked by ErgoSOC-AU response playbook -- Sentinel incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
                             }
                           }
                         }
