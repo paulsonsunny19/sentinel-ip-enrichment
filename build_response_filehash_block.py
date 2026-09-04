@@ -147,7 +147,7 @@ def build_definition():
                                     "indicatorValue": "@{outputs('Compose_Clean_Hash')}",
                                     "indicatorType": "@{outputs('Compose_Indicator_Type')}",
                                     "action": "@{parameters('Action')}",
-                                    "title": "@{concat('ErgoSOC-AU block: ', outputs('Compose_Clean_Hash'))}",
+                                    "title": "@{concat('ErgoSOC-AU block (Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), '): ', outputs('Compose_Clean_Hash'))}",
                                     "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
                                     "severity": "High",
                                     "expirationTime": INDICATOR_EXPIRATION_EXPR,

@@ -90,7 +90,11 @@ def indicator_body(indicator_type, value_expr, title_prefix):
         "indicatorValue": f"@{{{value_expr}}}",
         "indicatorType": indicator_type,
         "action": "@{parameters('Action')}",
-        "title": f"@{{concat('{title_prefix}', {value_expr})}}",
+        "title": (
+            f"@{{concat('{title_prefix}(Incident #', "
+            "string(triggerBody()?['object']?['properties']?['incidentNumber']), "
+            f"'): ', {value_expr})}}"
+        ),
         "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
         "severity": "High",
         "expirationTime": INDICATOR_EXPIRATION_EXPR,
@@ -161,7 +165,7 @@ def build_ip_section():
                     **http_call(
                         "https://api.security.microsoft.com/api/indicators",
                         method="POST", auth=MDE_AUTH,
-                        body=indicator_body("IpAddress", "items('For_each_IP_entity')?['Address']", "ErgoSOC-AU block: "),
+                        body=indicator_body("IpAddress", "items('For_each_IP_entity')?['Address']", "ErgoSOC-AU block "),
                     ),
                     "runAfter": after("Reset_IpBlockResult"),
                 },
@@ -208,7 +212,7 @@ def build_url_section():
                     **http_call(
                         "https://api.security.microsoft.com/api/indicators",
                         method="POST", auth=MDE_AUTH,
-                        body=indicator_body("Url", "outputs('Compose_Clean_Url')", "ErgoSOC-AU block: "),
+                        body=indicator_body("Url", "outputs('Compose_Clean_Url')", "ErgoSOC-AU block "),
                     ),
                     "runAfter": after("Compose_Clean_Url"),
                 },

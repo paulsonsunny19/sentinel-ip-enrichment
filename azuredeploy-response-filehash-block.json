@@ -266,7 +266,7 @@
                           "indicatorValue": "@{outputs('Compose_Clean_Hash')}",
                           "indicatorType": "@{outputs('Compose_Indicator_Type')}",
                           "action": "@{parameters('Action')}",
-                          "title": "@{concat('ErgoSOC-AU block: ', outputs('Compose_Clean_Hash'))}",
+                          "title": "@{concat('ErgoSOC-AU block (Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), '): ', outputs('Compose_Clean_Hash'))}",
                           "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
                           "severity": "High",
                           "expirationTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
