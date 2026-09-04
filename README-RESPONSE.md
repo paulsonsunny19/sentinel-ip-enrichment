@@ -152,6 +152,11 @@ So by default, `ErgoSOC-AU-Email-BlockSenderAndQuarantine` composes the exact
 Network message ID, Subject, Sender, and Recipient, and posts them to the incident comment for an
 analyst to run.
 
+For the full step-by-step of turning `AutoExecuteBlock` on — every command, every permission, and
+every real failure hit while doing it the first time (broken CLI extensions, module version
+pinning, the easy-to-miss `Exchange.ManageAsApp` grant, propagation delays, etc.) — see
+[`docs/SOP-Email-AutoExecute-Setup.md`](docs/SOP-Email-AutoExecute-Setup.md).
+
 ### Optional: auto-execute the block via an Automation Account
 
 If you want this actually automated, this repo includes the infrastructure for it. **Two separate
