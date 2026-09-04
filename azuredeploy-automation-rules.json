@@ -1,0 +1,354 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "WorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the existing Sentinel-enabled Log Analytics workspace to create the automation rules in. Must be the same workspace Sentinel is enabled on."
+      }
+    },
+    "IPPlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-IP-Enrichment",
+      "metadata": {
+        "description": "Name of the deployed IP address enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
+      }
+    },
+    "EnableIPRule": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the automation rule that runs the IP address enrichment playbook. Set to false if you haven't deployed that playbook."
+      }
+    },
+    "DevicePlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-Device-Enrichment",
+      "metadata": {
+        "description": "Name of the deployed host enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
+      }
+    },
+    "EnableDeviceRule": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the automation rule that runs the host enrichment playbook. Set to false if you haven't deployed that playbook."
+      }
+    },
+    "UrlPlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-URL-Enrichment",
+      "metadata": {
+        "description": "Name of the deployed URL enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
+      }
+    },
+    "EnableUrlRule": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the automation rule that runs the URL enrichment playbook. Set to false if you haven't deployed that playbook."
+      }
+    },
+    "FileHashPlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-FileHash-Enrichment",
+      "metadata": {
+        "description": "Name of the deployed file hash enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
+      }
+    },
+    "EnableFileHashRule": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the automation rule that runs the file hash enrichment playbook. Set to false if you haven't deployed that playbook."
+      }
+    },
+    "EmailPlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-Email-Enrichment",
+      "metadata": {
+        "description": "Name of the deployed mail message enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
+      }
+    },
+    "EnableEmailRule": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the automation rule that runs the mail message enrichment playbook. Set to false if you haven't deployed that playbook."
+      }
+    },
+    "AccountPlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-Account-Enrichment",
+      "metadata": {
+        "description": "Name of the deployed account enrichment Logic App this rule should run. Must match that playbook's own PlaybookName parameter."
+      }
+    },
+    "EnableAccountRule": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the automation rule that runs the account enrichment playbook. Set to false if you haven't deployed that playbook."
+      }
+    }
+  },
+  "variables": {
+    "IPRuleId": "[guid(resourceGroup().id, parameters('WorkspaceName'), 'IP-entity-enrichment-automation-rule')]",
+    "DeviceRuleId": "[guid(resourceGroup().id, parameters('WorkspaceName'), 'Device-entity-enrichment-automation-rule')]",
+    "UrlRuleId": "[guid(resourceGroup().id, parameters('WorkspaceName'), 'Url-entity-enrichment-automation-rule')]",
+    "FileHashRuleId": "[guid(resourceGroup().id, parameters('WorkspaceName'), 'FileHash-entity-enrichment-automation-rule')]",
+    "EmailRuleId": "[guid(resourceGroup().id, parameters('WorkspaceName'), 'Email-entity-enrichment-automation-rule')]",
+    "AccountRuleId": "[guid(resourceGroup().id, parameters('WorkspaceName'), 'Account-entity-enrichment-automation-rule')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[concat(parameters('WorkspaceName'), '/Microsoft.SecurityInsights/', variables('IPRuleId'))]",
+      "condition": "[parameters('EnableIPRule')]",
+      "properties": {
+        "displayName": "Run IP address enrichment when incident has an IP address entity",
+        "order": 1,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IPAddress",
+                "operator": "Contains",
+                "propertyValues": [
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('IPPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[concat(parameters('WorkspaceName'), '/Microsoft.SecurityInsights/', variables('DeviceRuleId'))]",
+      "condition": "[parameters('EnableDeviceRule')]",
+      "properties": {
+        "displayName": "Run host enrichment when incident has a host entity",
+        "order": 2,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "HostName",
+                "operator": "Contains",
+                "propertyValues": [
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('DevicePlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[concat(parameters('WorkspaceName'), '/Microsoft.SecurityInsights/', variables('UrlRuleId'))]",
+      "condition": "[parameters('EnableUrlRule')]",
+      "properties": {
+        "displayName": "Run URL enrichment when incident has an URL entity",
+        "order": 3,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "Url",
+                "operator": "Contains",
+                "propertyValues": [
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('UrlPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[concat(parameters('WorkspaceName'), '/Microsoft.SecurityInsights/', variables('FileHashRuleId'))]",
+      "condition": "[parameters('EnableFileHashRule')]",
+      "properties": {
+        "displayName": "Run file hash enrichment when incident has a file hash entity",
+        "order": 4,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "FileHashValue",
+                "operator": "Contains",
+                "propertyValues": [
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('FileHashPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[concat(parameters('WorkspaceName'), '/Microsoft.SecurityInsights/', variables('EmailRuleId'))]",
+      "condition": "[parameters('EnableEmailRule')]",
+      "properties": {
+        "displayName": "Run mail message enrichment when incident has a mail message entity",
+        "order": 5,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "MailMessageRecipient",
+                "operator": "Contains",
+                "propertyValues": [
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('EmailPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[concat(parameters('WorkspaceName'), '/Microsoft.SecurityInsights/', variables('AccountRuleId'))]",
+      "condition": "[parameters('EnableAccountRule')]",
+      "properties": {
+        "displayName": "Run account enrichment when incident has an account entity",
+        "order": 6,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "AccountAadUserId",
+                "operator": "Contains",
+                "propertyValues": [
+                  ""
+                ]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[resourceId('Microsoft.Logic/workflows', parameters('AccountPlaybookName'))]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "IPAutomationRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('WorkspaceName'), 'Microsoft.SecurityInsights', variables('IPRuleId'))]"
+    },
+    "DeviceAutomationRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('WorkspaceName'), 'Microsoft.SecurityInsights', variables('DeviceRuleId'))]"
+    },
+    "UrlAutomationRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('WorkspaceName'), 'Microsoft.SecurityInsights', variables('UrlRuleId'))]"
+    },
+    "FileHashAutomationRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('WorkspaceName'), 'Microsoft.SecurityInsights', variables('FileHashRuleId'))]"
+    },
+    "EmailAutomationRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('WorkspaceName'), 'Microsoft.SecurityInsights', variables('EmailRuleId'))]"
+    },
+    "AccountAutomationRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('WorkspaceName'), 'Microsoft.SecurityInsights', variables('AccountRuleId'))]"
+    }
+  }
+}

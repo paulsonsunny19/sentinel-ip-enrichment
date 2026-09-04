@@ -10,9 +10,159 @@ logons, network and process activity, plus Sentinel workspace context. See
 [`README-DEVICE.md`](README-DEVICE.md) and deploy `azuredeploy-device.json`. The IP and device
 playbooks are independent and can both be attached to the same incident automation rule.
 
-A third, separate **URL enrichment playbook** enriches Sentinel URL entities with Microsoft
-Defender Threat Intelligence (MDTI), Defender XDR URL activity, Sentinel threat intelligence and
-workspace sightings. See [`README-URL.md`](README-URL.md) and deploy `azuredeploy-url.json`.
+A third, separate **URL enrichment playbook** enriches Sentinel URL entities with the maximum
+practical set of sources: Microsoft Defender Threat Intelligence (MDTI), Defender XDR URL activity,
+VirusTotal, Google Safe Browsing, urlscan.io, PhishTank, and Sentinel threat intelligence/workspace
+sightings. See [`README-URL.md`](README-URL.md) and deploy `azuredeploy-url.json`.
+
+A fourth, separate **file hash enrichment playbook** enriches Sentinel FileHash entities
+(SHA256/SHA1/MD5) with Defender's native `FileProfile()` file intelligence, Defender XDR file/process
+activity, and Sentinel threat intelligence and workspace sightings. See
+[`README-FILEHASH.md`](README-FILEHASH.md) and deploy `azuredeploy-filehash.json`.
+
+A fifth, separate **reported email enrichment playbook** enriches Sentinel Mail message entities
+(e.g. user-reported phishing) with the full Defender XDR email record — delivery, threat
+classification, authentication results, attachments, contained URLs, Safe Links click-through,
+post-delivery remediation — plus MDTI sender-domain reputation and Sentinel threat
+intelligence/workspace sightings. See [`README-EMAIL.md`](README-EMAIL.md) and deploy
+`azuredeploy-email.json`.
+
+A sixth, separate **account (user) enrichment playbook** enriches Sentinel Account entities with
+the Entra ID profile (name, job title, office/city/state/country, manager, directory roles),
+registered devices, MFA/SSPR registration posture, Entra ID Protection identity risk (including
+recent risk detections), out-of-office status, and Sentinel-workspace sign-in activity (including
+failed-MFA and MFA-fraud-reported counts) — deliberately without IP-address reputation lookups,
+which stay in the dedicated IP playbook. See [`README-ACCOUNT.md`](README-ACCOUNT.md) and deploy
+`azuredeploy-account.json`.
+
+All six playbooks — IP, device, URL, file hash, email, and account — are independent and can all be
+attached to the same incident automation rule.
+
+Beyond those six read-only enrichment playbooks, this repo also has seven **response**
+(remediation) playbooks that write to Entra ID, Defender for Endpoint, or (optionally) Exchange
+Online — revoke sessions, reset a password, disable an account, confirm compromised, revoke OAuth
+app consent, isolate a device, run an AV scan, restrict app execution, an email sender-block
+(assisted by default, optionally auto-executed), and tenant-wide block indicators for file hashes,
+IPs and URLs. These are a different trust category (they act, not just report) and are
+deliberately not wired to any automation rule — see [`README-RESPONSE.md`](README-RESPONSE.md)
+before deploying any of them.
+
+## Deploy all six in one go
+
+`azuredeploy-all.json` deploys all six playbooks as one ARM deployment (each as a nested
+deployment, still with its own dedicated connections) — one `az deployment group create` call
+instead of six. Every parameter each playbook has (beyond the shared identity/workspace ones) is
+exposed here too, not just the URL playbook's API keys:
+
+```bash
+az deployment group create \
+  --name sentinel-enrichment-all \
+  --resource-group "$SENTINEL_RG" \
+  --template-file azuredeploy-all.json \
+  --parameters WorkspaceName="$WORKSPACE" \
+               UserAssignedManagedIdentityResourceId="$UAMI_ID" \
+               AbuseIPDBApiKey="$ABUSEIPDB_KEY" \
+               VirusTotalApiKey="$VT_KEY" \
+               GreyNoiseApiKey="$GREYNOISE_KEY" \
+               GoogleSafeBrowsingApiKey="$GSB_KEY"
+```
+*(only the parameters you want to override need to be listed — every other parameter keeps its own default)*
+
+Three kinds of parameter handling:
+
+- **Always shared** (identical everywhere): `UserAssignedManagedIdentityResourceId`, `WorkspaceName`,
+  `WorkspaceResourceGroup`, `WorkspaceSubscriptionId`.
+- **Deliberately merged** into one shared parameter, applied to every playbook that has it:
+  `LookbackDays`, `DefenderLookbackDays`, `EnableMicrosoftThreatIntelligence` (URL + Email),
+  `VirusTotalApiKey` (IP + URL — same VirusTotal account, different endpoints), and
+  `EnableDefenderAdvancedHunting` (IP, Device, URL, FileHash, Email). **Note**: this template
+  defaults `EnableDefenderAdvancedHunting` to `true` for all five — the IP playbook defaults it to
+  `false` when deployed standalone (`azuredeploy.json`), since it's the one that needs the extra
+  Graph permission/quota most narrowly. Pass `EnableDefenderAdvancedHunting=false` at deploy time if
+  you don't want that change.
+- **Everything else keeps its own name** — `AbuseIPDBApiKey`, `GreyNoiseApiKey`,
+  `EnableShodanInternetDB` (IP); `DeviceContextWatchlistAlias` (Device); `EnablePhishTank`,
+  `EnableUrlscanSearch`, `GoogleSafeBrowsingApiKey`, `PhishTankAppKey`, `UrlscanApiKey`,
+  `URLContextWatchlistAlias` (URL); `FileHashContextWatchlistAlias` (FileHash);
+  `EmailContextWatchlistAlias` (Email); `EnableIdentityProtection`, `EnableMailboxSettings`,
+  `EnableMfaMethods`, `EnableRegisteredDevices`, `EnableSigninHistory`, `EnableUserProfile`,
+  `UserContextWatchlistAlias` (Account) — 36 master parameters in total. `PlaybookName` is the one
+  exception that can't be shared (each Logic App needs a distinct resource name), so it's exposed
+  per playbook instead: `IPPlaybookName`, `DevicePlaybookName`, `UrlPlaybookName`,
+  `FileHashPlaybookName`, `EmailPlaybookName`, `AccountPlaybookName`, each still defaulting to that
+  playbook's own original name.
+
+To change a parameter after deployment, either redeploy `azuredeploy-all.json` with new values, or
+redeploy that playbook's own `azuredeploy-*.json` directly — both target the same resource names,
+so either updates in place rather than creating a duplicate. Generated by
+`build_master_template.py`, which re-runs the six individual generators first so it never embeds
+stale JSON, and asserts at build time that no parameter name collides across playbooks without
+being explicitly merged or prefixed.
+
+## Automation rules — one per entity type
+
+Every playbook already self-gates: if you attach all six to a single "run always" automation rule,
+each one still checks its own entity list and simply produces no comment when the incident has no
+matching entity (e.g. the URL playbook does nothing on an incident with only an IP entity). So a
+single catch-all rule is correct, and no automation rule change is required to make any of this
+work.
+
+Splitting into six entity-conditional rules is optional, but worth doing for two reasons: it avoids
+firing (and paying for) a playbook run that can only ever no-op, and it makes the incident's run
+history readable — only the playbooks that actually enriched something show up.
+
+### Option A — deploy `azuredeploy-automation-rules.json`
+
+Generated by `build_automation_rules_template.py`. Creates all six rules as ARM resources
+(`Microsoft.OperationalInsights/workspaces/providers/automationRules`) directly in your Sentinel
+workspace, each condition-matched against the property names Sentinel's automation rule engine
+actually supports (verified against the `Microsoft.SecurityInsights` resource provider's schema,
+not just the Portal's field labels):
+
+```bash
+az deployment group create \
+  --name sentinel-enrichment-automation-rules \
+  --resource-group "$SENTINEL_RG" \
+  --template-file azuredeploy-automation-rules.json \
+  --parameters WorkspaceName="$WORKSPACE"
+```
+
+Each rule has its own `Enable<X>Rule` parameter (default `true`) — set it to `false` for any
+playbook you haven't deployed, so its rule is skipped rather than pointing at a Logic App that
+doesn't exist. The `<X>PlaybookName` parameters (e.g. `IPPlaybookName`) default to each playbook's
+own standalone default name and only need overriding if you deployed under a custom name.
+
+### Option B — build them by hand in the Sentinel Portal
+
+1. **Sentinel → Automation → Create → Automation rule.**
+2. **Trigger**: `When incident is created`.
+3. **Conditions → Add → Entity**: pick the entity category, then a property on it, operator
+   `Contains`, and leave the value blank. An empty-value `Contains` matches any incident that has at
+   least one entity of that type/property present — it's an existence check, not a text match.
+   (Sentinel's automation rule conditions have no dedicated "exists" operator, so this is the
+   standard way to do it.)
+4. **Actions → Add action → Run playbook**, and pick the matching playbook below.
+5. Save. Repeat for each of the six entity types (six separate automation rules).
+
+| Incident has entity... | Condition (category → property) | Operator | Value | Run playbook |
+|---|---|---|---|---|
+| IP address | Entity → IP address → Address | Contains | *(blank)* | `ErgoSOC-AU-IP-Enrichment` |
+| Host | Entity → Host → Host name | Contains | *(blank)* | `ErgoSOC-AU-Device-Enrichment` |
+| URL / domain name | Entity → URL → Url | Contains | *(blank)* | `ErgoSOC-AU-URL-Enrichment` |
+| File hash | Entity → File hash → Value | Contains | *(blank)* | `ErgoSOC-AU-FileHash-Enrichment` |
+| Mail message | Entity → Mail message → Recipient | Contains | *(blank)* | `ErgoSOC-AU-Email-Enrichment` |
+| Account | Entity → Account → AAD user ID (or Name) | Contains | *(blank)* | `ErgoSOC-AU-Account-Enrichment` |
+
+*(Mail message entities have no "network message ID" condition property in the automation rule
+engine, so Recipient is used as the existence check instead — every mail message entity has at
+least one. File hash entities likewise only expose the hash Value as a condition property, not the
+algorithm.)*
+
+The playbook names above are the ARM template defaults (`PlaybookName` parameter, or the
+per-playbook `*PlaybookName` parameters in `azuredeploy-all.json`) — if you deployed with a custom
+name, pick that Logic App in the action instead. An incident with several entity types (e.g. an IP
+and a file hash) simply matches several rules and runs several playbooks, each posting its own
+comment.
 
 ## Sources and what they cost
 
@@ -70,6 +220,52 @@ azuredeploy-url.json                       separate URL enrichment ARM template
 build_url_template.py                      generator for the URL template
 kql/Defender-XDR-URL-Enrichment.kql        standalone Defender URL validation query
 README-URL.md                              URL sources, verdict logic, permissions and deployment
+
+azuredeploy-filehash.json                  separate file hash enrichment ARM template
+build_filehash_template.py                 generator for the file hash template
+kql/Defender-XDR-FileHash-Enrichment.kql   standalone Defender file hash validation query
+README-FILEHASH.md                         file hash sources, verdict logic, permissions and deployment
+
+azuredeploy-email.json                     separate reported-email enrichment ARM template
+build_email_template.py                    generator for the email template
+kql/Defender-XDR-Email-Enrichment.kql      standalone Defender email validation query
+README-EMAIL.md                            email sources, verdict logic, permissions and deployment
+
+azuredeploy-account.json                   separate Account (user) enrichment ARM template
+build_account_template.py                  generator for the account template
+kql/User-Signin-Insights.kql               standalone sign-in validation query
+README-ACCOUNT.md                          account sources, verdict logic, permissions and deployment
+
+azuredeploy-all.json                       deploys all six playbooks as one nested deployment
+build_master_template.py                   generator for the combined template
+
+azuredeploy-automation-rules.json          optional: six entity-conditional automation rules
+build_automation_rules_template.py         generator for the automation rules template
+
+azuredeploy-response-account-contain.json        response: revoke sessions / reset password (Account)
+azuredeploy-response-account-disable.json        response: disable account / confirm compromised (Account)
+azuredeploy-response-account-revoke-consent.json response: revoke OAuth app consent (Account)
+azuredeploy-response-device-contain.json         response: isolate / AV scan / restrict execution (Host)
+azuredeploy-response-email-block.json            response: sender block / quarantine, optional auto-execute (Mail message)
+azuredeploy-response-filehash-block.json         response: block file hash indicator tenant-wide (FileHash)
+azuredeploy-response-indicator-block.json        response: block IP/URL indicator tenant-wide (IP, URL)
+azuredeploy-automation-account-response.json     optional infra: Automation Account for the email auto-execute path
+build_response_account_contain.py                generator for the account revoke+reset template
+build_response_account_disable.py                generator for the account disable+confirm template
+build_response_account_revoke_consent.py         generator for the account revoke-app-consent template
+build_response_device_contain.py                 generator for the device isolate+scan+restrict template
+build_response_email_block.py                    generator for the email block/auto-execute template
+build_response_filehash_block.py                 generator for the file hash block-indicator template
+build_response_indicator_block.py                generator for the IP/URL block-indicator template
+build_automation_account_response.py             generator for the Automation Account infra template
+response_common.py                               shared WDL helpers for the response playbooks
+runbooks/Set-ErgoSOC-TenantBlockListItem.ps1     EXO PowerShell runbook the email auto-execute path calls
+
+azuredeploy-response-all.json                    deploys all seven response playbooks as one nested deployment
+azuredeploy-response-without-email.json          deploys the other six, minus Email block (its auto-execute setup is a separate flow)
+build_response_master_template.py                generator for both combined response templates
+
+README-RESPONSE.md                               response playbook safety model, permissions, deployment
 ```
 
 ## Deploy (about 10 minutes)
@@ -178,7 +374,7 @@ Drop `-PreviewOnly` and add `-IncidentName <incident guid>` to comment on a real
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `PlaybookName` | `Enrich-IP-IncidentComment` | |
+| `PlaybookName` | `ErgoSOC-AU-IP-Enrichment` | |
 | `UserAssignedManagedIdentityResourceId` | *(required)* | full resource ID of one existing client-owned UAMI; the template never enables a system-assigned identity |
 | `WorkspaceName` | *(required)* | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current | set if the workspace lives elsewhere |
@@ -202,6 +398,11 @@ severity or the external reputation verdict.
 
 ## Things worth knowing
 
+- **One comment per IP entity, not one per incident.** Each entity's comment posts as soon as its
+  own enrichment finishes, right inside the loop — an incident with several IPs gets several
+  comments, not one giant one. This also keeps every comment under Sentinel's 30,000-character
+  `/Incidents/Comment` limit; if one entity's own data is still unusually large, that single
+  comment is truncated at 28,000 characters with a note, rather than the whole comment failing.
 - **Nothing is fatal.** Every lookup, workspace query and Defender query runs with failure tolerated — a rate-limited
   API, a blocked egress path, or a table you don't collect degrades that one section to "lookup
   failed" / "No results" rather than failing the run. `union isfuzzy=true` is what makes missing

@@ -1,0 +1,42 @@
+// Run in the Sentinel workspace's Logs blade.
+// Supply the user's UPN. Mirrors the account playbook's sign-in summary query
+// (SigninJson) without assuming AuthenticationDetails schema.
+let UpnInput = tolower('user@contoso.com');
+let Lookback = 14d;
+let AllSignins = union isfuzzy=true
+(SigninLogs
+ | where TimeGenerated > ago(Lookback)
+ | where tolower(tostring(column_ifexists('UserPrincipalName', ''))) == UpnInput
+ | extend SourceTable = 'Interactive'),
+(AADNonInteractiveUserSignInLogs
+ | where TimeGenerated > ago(Lookback)
+ | where tolower(tostring(column_ifexists('UserPrincipalName', ''))) == UpnInput
+ | extend SourceTable = 'NonInteractive');
+AllSignins
+| extend SafeResult = tostring(column_ifexists('ResultType', '')),
+         SafeRiskLevel = tostring(column_ifexists('RiskLevelDuringSignIn', 'none')),
+         SafeRiskState = tostring(column_ifexists('RiskState', 'none')),
+         SafeIP = tostring(column_ifexists('IPAddress', '')),
+         SafeApp = tostring(column_ifexists('AppDisplayName', '')),
+         SafeCity = tostring(parse_json(tostring(column_ifexists('LocationDetails', '{}'))).city),
+         SafeCountry = tostring(parse_json(tostring(column_ifexists('LocationDetails', '{}'))).countryOrRegion),
+         SafeDevice = tostring(parse_json(tostring(column_ifexists('DeviceDetail', '{}'))).displayName),
+         SafeCA = tostring(column_ifexists('ConditionalAccessStatus', ''))
+| project Timestamp = TimeGenerated,
+          SourceTable, Result = SafeResult, RiskLevel = SafeRiskLevel, RiskState = SafeRiskState,
+          IPAddress = SafeIP, App = SafeApp, City = SafeCity, Country = SafeCountry,
+          Device = SafeDevice, ConditionalAccess = SafeCA
+| order by Timestamp desc
+| take 200
+
+// Separately, to see per-step MFA detail (failed challenges / fraud reports) for the
+// same user, run:
+//
+// AllSignins
+// | mv-expand AuthStep = parse_json(tostring(column_ifexists('AuthenticationDetails', '[]')))
+// | extend StepMethod = tostring(AuthStep.authenticationMethod),
+//          StepSucceeded = tostring(AuthStep.succeeded),
+//          StepDetail = tostring(AuthStep.authenticationStepResultDetail)
+// | where StepMethod has 'MFA' or StepDetail has 'MFA' or StepDetail has 'fraud'
+// | project Timestamp, StepMethod, StepSucceeded, StepDetail
+// | order by Timestamp desc
