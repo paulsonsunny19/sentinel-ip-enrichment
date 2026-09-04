@@ -4,10 +4,10 @@
   "metadata": {
     "title": "Response: isolate device, run antivirus scan, and/or restrict app execution for Host entities",
     "description": "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network, starts a quick antivirus scan, and/or restricts app execution to Microsoft-signed binaries only. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
-    "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission AdvancedQuery.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate, Machine.Scan and Machine.RestrictExecution (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
+    "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission ThreatHunting.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate, Machine.Scan and Machine.RestrictExecution (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
     "postDeployment": [
       "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
-      "Grant the managed identity the AdvancedQuery.Read.All Microsoft Graph application permission via an app-role assignment.",
+      "Grant the managed identity the ThreatHunting.Read.All Microsoft Graph application permission via an app-role assignment.",
       "Separately grant the managed identity the Machine.Isolate, Machine.Scan and Machine.RestrictExecution application permissions on the WindowsDefenderATP API (not Microsoft Graph) -- see README-RESPONSE.md for the exact az CLI commands.",
       "Authorise the Microsoft Sentinel API connection.",
       "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."

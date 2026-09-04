@@ -80,7 +80,7 @@ done
 | Account: revoke + reset | `User.ReadWrite.All` | Microsoft Graph |
 | Account: disable + confirm compromised | `User.ReadWrite.All`, `IdentityRiskyUser.ReadWrite.All` (requires Entra ID P2) | Microsoft Graph |
 | Account: revoke app consent | `DelegatedPermissionGrant.ReadWrite.All` | Microsoft Graph |
-| Device: isolate, scan, restrict | `AdvancedQuery.Read.All` (machine ID lookup) | Microsoft Graph |
+| Device: isolate, scan, restrict | `ThreatHunting.Read.All` (machine ID lookup) | Microsoft Graph |
 | Device: isolate, scan, restrict | `Machine.Isolate`, `Machine.Scan`, `Machine.RestrictExecution` | **WindowsDefenderATP** (a *different* enterprise app, ID `fc780465-2017-40d4-a0c5-307022471b92`) |
 | Email: block + quarantine (assisted mode) | none | — no write call made |
 | Email: block + quarantine (auto-execute mode) — Logic App's own UAMI | `Automation Job Operator` Azure RBAC role, scoped to the Automation Account | Azure Resource Manager, not Graph |
