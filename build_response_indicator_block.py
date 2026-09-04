@@ -204,11 +204,14 @@ def build_url_section():
                         "items('For_each_URL_entity')?['url'], '')))"
                     ),
                 },
-                "HTTP_SubmitUrlIndicator": http_call(
-                    "https://graph.microsoft.com/v1.0/security/tiIndicators",
-                    method="POST", auth=GRAPH_AUTH,
-                    body=base_indicator_body("url", "outputs('Compose_Clean_Url')"),
-                ),
+                "HTTP_SubmitUrlIndicator": {
+                    **http_call(
+                        "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                        method="POST", auth=GRAPH_AUTH,
+                        body=base_indicator_body("url", "outputs('Compose_Clean_Url')"),
+                    ),
+                    "runAfter": after("Compose_Clean_Url"),
+                },
                 "Set_UrlBlockResult": {
                     "runAfter": after("HTTP_SubmitUrlIndicator", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
                     "type": "SetVariable",

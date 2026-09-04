@@ -4289,7 +4289,11 @@
                               "inputs": "@trim(string(coalesce(items('For_each_URL_entity')?['Url'], items('For_each_URL_entity')?['url'], '')))"
                             },
                             "HTTP_SubmitUrlIndicator": {
-                              "runAfter": {},
+                              "runAfter": {
+                                "Compose_Clean_Url": [
+                                  "Succeeded"
+                                ]
+                              },
                               "type": "Http",
                               "inputs": {
                                 "method": "POST",
