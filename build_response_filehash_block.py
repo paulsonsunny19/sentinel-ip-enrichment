@@ -7,6 +7,13 @@ threat indicator API (POST /security/tiIndicators) targeted at Microsoft
 Defender ATP, so Defender for Endpoint enforces the block across managed
 devices.
 
+BETA ENDPOINT: confirmed by an actual failed run against v1.0 (400
+"Resource not found for the segment 'tiIndicators'") -- this resource has
+never been promoted to v1.0, only beta. Beta endpoints can change shape
+or behavior without notice and aren't officially supported for production
+automation; there's no v1.0 alternative to fall back to for this specific
+capability as of this writing.
+
 Not wired to any automation rule -- see response_common.py's module
 docstring and README-RESPONSE.md.
 
@@ -117,7 +124,7 @@ def build_definition():
                         },
                         "actions": {
                             "HTTP_SubmitIndicator": http_call(
-                                "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                                "https://graph.microsoft.com/beta/security/tiIndicators",
                                 method="POST", auth=GRAPH_AUTH,
                                 body={
                                     "action": "block",

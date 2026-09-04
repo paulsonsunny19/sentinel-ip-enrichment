@@ -14,6 +14,13 @@ address contains a colon (a plain, well-known IPv6-detection heuristic --
 Sentinel IP entities are always a bare address, never CIDR, so this is
 safe here).
 
+BETA ENDPOINT: confirmed by an actual failed run against v1.0 (400
+"Resource not found for the segment 'tiIndicators'") -- this resource has
+never been promoted to v1.0, only beta. Beta endpoints can change shape
+or behavior without notice and aren't officially supported for production
+automation; there's no v1.0 alternative to fall back to for this specific
+capability as of this writing.
+
 Not wired to any automation rule -- see response_common.py's module
 docstring and README-RESPONSE.md.
 
@@ -145,7 +152,7 @@ def build_ip_section():
                     "expression": {"equals": ["@contains(items('For_each_IP_entity')?['Address'], ':')", True]},
                     "actions": {
                         "HTTP_SubmitIpIndicator_V6": http_call(
-                            "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                            "https://graph.microsoft.com/beta/security/tiIndicators",
                             method="POST", auth=GRAPH_AUTH,
                             body=base_indicator_body("networkIPv6", "items('For_each_IP_entity')?['Address']"),
                         ),
@@ -158,7 +165,7 @@ def build_ip_section():
                     "else": {
                         "actions": {
                             "HTTP_SubmitIpIndicator_V4": http_call(
-                                "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                                "https://graph.microsoft.com/beta/security/tiIndicators",
                                 method="POST", auth=GRAPH_AUTH,
                                 body=base_indicator_body("networkIPv4", "items('For_each_IP_entity')?['Address']"),
                             ),
@@ -206,7 +213,7 @@ def build_url_section():
                 },
                 "HTTP_SubmitUrlIndicator": {
                     **http_call(
-                        "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                        "https://graph.microsoft.com/beta/security/tiIndicators",
                         method="POST", auth=GRAPH_AUTH,
                         body=base_indicator_body("url", "outputs('Compose_Clean_Url')"),
                     ),

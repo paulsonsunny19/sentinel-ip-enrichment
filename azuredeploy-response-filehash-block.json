@@ -233,7 +233,7 @@
                       "type": "Http",
                       "inputs": {
                         "method": "POST",
-                        "uri": "https://graph.microsoft.com/v1.0/security/tiIndicators",
+                        "uri": "https://graph.microsoft.com/beta/security/tiIndicators",
                         "headers": {
                           "Accept": "application/json",
                           "Content-Type": "application/json"
