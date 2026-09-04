@@ -238,6 +238,30 @@ own per-playbook name — 26 master parameters in total.
 The safety model is identical either way: **none of the seven are wired to an automation rule by
 this template either.** Deploying the bundle doesn't change that — see above.
 
+### Deploy six together, keep Email separate
+
+If you'd rather set up the Email block playbook's Automation Account / dedicated identity path on
+its own schedule, `azuredeploy-response-without-email.json` bundles the other six (same pattern,
+same generator — `build_response_master_template.py` writes both files):
+
+```bash
+az deployment group create \
+  --name sentinel-response-without-email \
+  --resource-group "$SENTINEL_RG" \
+  --template-file azuredeploy-response-without-email.json \
+  --parameters UserAssignedManagedIdentityResourceId="$UAMI_ID"
+
+az deployment group create \
+  --name sentinel-response-email-block \
+  --resource-group "$SENTINEL_RG" \
+  --template-file azuredeploy-response-email-block.json \
+  --parameters UserAssignedManagedIdentityResourceId="$UAMI_ID"
+```
+
+18 master parameters (no `EmailBlockPlaybookName`, `AutoExecuteBlock`, or any `Exo*`/
+`AutomationAccountResourceId`/`RunbookName` parameter — those only exist on the email playbook's
+own template). Same safety model as every other option here.
+
 After deploying (either way), authorise the Microsoft Sentinel API connection for each (same
 manual one-time step every playbook in this repo needs), then **do not** attach any of them to an
 automation rule unless that's a deliberate decision — see above.

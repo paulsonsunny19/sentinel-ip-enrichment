@@ -262,7 +262,8 @@ response_common.py                               shared WDL helpers for the resp
 runbooks/Set-ErgoSOC-TenantBlockListItem.ps1     EXO PowerShell runbook the email auto-execute path calls
 
 azuredeploy-response-all.json                    deploys all seven response playbooks as one nested deployment
-build_response_master_template.py                generator for the combined response template
+azuredeploy-response-without-email.json          deploys the other six, minus Email block (its auto-execute setup is a separate flow)
+build_response_master_template.py                generator for both combined response templates
 
 README-RESPONSE.md                               response playbook safety model, permissions, deployment
 ```
