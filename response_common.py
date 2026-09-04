@@ -49,12 +49,13 @@ ARM_AUTH = managed_identity_authentication("https://management.azure.com/")
 
 SENTINEL_CONN = "@parameters('$connections')['azuresentinel']['connectionId']"
 
-# tiIndicators' expirationDateTime reads as a required field in Microsoft
-# Graph's threat-indicator API -- omitting it to get a genuinely permanent
-# indicator isn't something we could verify (docs were unreachable this
-# session), so IndicatorExpirationDays=0 is treated as "effectively never"
-# by submitting a far-future date instead, rather than risking a rejected
-# submission on an unconfirmed null/omit behavior.
+# Defender for Endpoint's indicators API lists expirationTime as optional,
+# but whether omitting it actually means "never expires" (versus some
+# platform default) isn't something this session could verify -- so
+# IndicatorExpirationDays=0 is treated as "effectively never" by submitting
+# a far-future date instead, rather than relying on unconfirmed omit
+# behavior. Used for both the FileHash and IP/URL block-indicator
+# playbooks' expirationTime field.
 INDICATOR_EXPIRATION_EXPR = (
     "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', "
     "addDays(utcNow(), parameters('IndicatorExpirationDays')))}"

@@ -18,7 +18,7 @@ Response playbooks don't touch a Log Analytics workspace at all (no KQL,
 no Azure Monitor Logs connection) -- the only thing every one of them
 shares is UserAssignedManagedIdentityResourceId. Two parameter names
 collide across playbooks with the same meaning and are deliberately
-merged: AzureTenantId and IndicatorExpirationDays (both FileHash and
+merged: Action and IndicatorExpirationDays (both FileHash and
 IP/URL block-indicator playbooks). Everything else keeps its own name;
 PlaybookName is exposed per playbook since each Logic App needs a
 distinct resource name.
@@ -57,9 +57,10 @@ SHARED_PARAM_MAP = {
 # merged into one master parameter -- confirmed by inventory to be the only
 # names, besides PlaybookName, that collide across the seven templates.
 MERGE_PARAMS = {
-    "AzureTenantId": {
-        "type": "string", "defaultValue": "[subscription().tenantId]",
-        "metadata": {"description": "Shared by the FileHash and IP/URL block-indicator playbooks. Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."},
+    "Action": {
+        "type": "string", "defaultValue": "Block",
+        "allowedValues": ["Alert", "Warn", "Block", "Audit", "BlockAndRemediate", "AlertAndBlock", "Allowed"],
+        "metadata": {"description": "Shared by the FileHash and IP/URL block-indicator playbooks. Defender for Endpoint indicator action. Block prevents access/execution with no alert; AlertAndBlock also raises a Defender alert; BlockAndRemediate additionally remediates existing instances."},
     },
     "IndicatorExpirationDays": {
         "type": "int", "defaultValue": 180, "minValue": 0, "maxValue": 365,
@@ -189,7 +190,7 @@ build(
         "to the same client-owned user-assigned managed identity. "
         "PlaybookName is exposed per playbook (e.g. "
         "AccountContainPlaybookName, DeviceContainPlaybookName, ...) "
-        "since each Logic App needs a distinct name; AzureTenantId and "
+        "since each Logic App needs a distinct name; Action and "
         "IndicatorExpirationDays are merged into one shared parameter "
         "each, applied to both the FileHash and IP/URL block-indicator "
         "playbooks. Everything else keeps its own per-playbook name. "
@@ -224,7 +225,7 @@ build(
         "materially bigger, independent provisioning flow than these six, "
         "which are complete and self-contained as-is. PlaybookName is "
         "exposed per playbook since each Logic App needs a distinct name; "
-        "AzureTenantId and IndicatorExpirationDays are merged into one "
+        "Action and IndicatorExpirationDays are merged into one "
         "shared parameter each, applied to both the FileHash and IP/URL "
         "block-indicator playbooks. Everything else keeps its own "
         "per-playbook name. SAFETY: none of these six are wired to a "

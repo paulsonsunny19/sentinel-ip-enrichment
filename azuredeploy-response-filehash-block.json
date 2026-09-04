@@ -3,15 +3,15 @@
   "contentVersion": "1.0.0.0",
   "metadata": {
     "title": "Response: block file hash indicator tenant-wide for FileHash entities",
-    "description": "For each FileHash entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Microsoft Graph's threat indicator API, targeted at Microsoft Defender ATP so Defender for Endpoint enforces it across managed devices. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
-    "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission ThreatIndicators.ReadWrite.OwnedBy.",
+    "description": "For each FileHash entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Defender for Endpoint's own indicators API, so Defender for Endpoint enforces it across managed devices. Supports SHA256/SHA1/MD5. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+    "prerequisites": "One existing user-assigned managed identity, granted the WindowsDefenderATP (not Microsoft Graph) application permission Ti.ReadWrite.All.",
     "postDeployment": [
       "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
-      "Grant the managed identity the ThreatIndicators.ReadWrite.OwnedBy Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
+      "Grant the managed identity the Ti.ReadWrite.All application permission on the WindowsDefenderATP API (app ID fc780465-2017-40d4-a0c5-307022471b92 -- not Microsoft Graph) via an app-role assignment, then allow time for token propagation.",
       "Authorise the Microsoft Sentinel API connection.",
       "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."
     ],
-    "lastUpdateTime": "2026-09-02",
+    "lastUpdateTime": "2026-09-04",
     "entities": [
       "FileHash"
     ],
@@ -40,11 +40,20 @@
         "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
       }
     },
-    "AzureTenantId": {
+    "Action": {
       "type": "string",
-      "defaultValue": "[subscription().tenantId]",
+      "defaultValue": "Block",
+      "allowedValues": [
+        "Alert",
+        "Warn",
+        "Block",
+        "Audit",
+        "BlockAndRemediate",
+        "AlertAndBlock",
+        "Allowed"
+      ],
       "metadata": {
-        "description": "Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."
+        "description": "Defender for Endpoint indicator action. Block prevents execution/access with no alert; AlertAndBlock also raises a Defender alert; BlockAndRemediate additionally remediates existing instances."
       }
     },
     "IndicatorExpirationDays": {
@@ -53,7 +62,7 @@
       "minValue": 0,
       "maxValue": 365,
       "metadata": {
-        "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration instead of omitting the field -- Graph's tiIndicators API treats expirationDateTime as required, and there's no confirmed null/omit behavior for a genuinely permanent indicator)."
+        "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration)."
       }
     }
   },
@@ -104,8 +113,9 @@
               "defaultValue": {},
               "type": "Object"
             },
-            "AzureTenantId": {
-              "type": "String"
+            "Action": {
+              "type": "String",
+              "defaultValue": "Block"
             },
             "IndicatorExpirationDays": {
               "type": "Int",
@@ -198,11 +208,20 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "@toLower(string(coalesce(items('For_each_FileHash_entity')?['Algorithm'], items('For_each_FileHash_entity')?['algorithm'], if(equals(length(outputs('Compose_Clean_Hash')), 64), 'SHA256', if(equals(length(outputs('Compose_Clean_Hash')), 40), 'SHA1', if(equals(length(outputs('Compose_Clean_Hash')), 32), 'MD5', 'Unknown'))))))"
+                  "inputs": "@coalesce(items('For_each_FileHash_entity')?['Algorithm'], items('For_each_FileHash_entity')?['algorithm'], if(equals(length(outputs('Compose_Clean_Hash')), 64), 'SHA256', if(equals(length(outputs('Compose_Clean_Hash')), 40), 'SHA1', if(equals(length(outputs('Compose_Clean_Hash')), 32), 'MD5', 'Unknown'))))"
+                },
+                "Compose_Indicator_Type": {
+                  "runAfter": {
+                    "Compose_Hash_Algorithm": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Compose",
+                  "inputs": "@if(equals(toUpper(outputs('Compose_Hash_Algorithm')), 'SHA256'), 'FileSha256', if(equals(toUpper(outputs('Compose_Hash_Algorithm')), 'SHA1'), 'FileSha1', if(equals(toUpper(outputs('Compose_Hash_Algorithm')), 'MD5'), 'FileMd5', '')))"
                 },
                 "Condition_Has_Hash": {
                   "runAfter": {
-                    "Compose_Hash_Algorithm": [
+                    "Compose_Indicator_Type": [
                       "Succeeded"
                     ]
                   },
@@ -220,8 +239,8 @@
                       {
                         "not": {
                           "equals": [
-                            "@outputs('Compose_Hash_Algorithm')",
-                            "unknown"
+                            "@outputs('Compose_Indicator_Type')",
+                            ""
                           ]
                         }
                       }
@@ -233,7 +252,7 @@
                       "type": "Http",
                       "inputs": {
                         "method": "POST",
-                        "uri": "https://graph.microsoft.com/beta/security/tiIndicators",
+                        "uri": "https://api.security.microsoft.com/api/indicators",
                         "headers": {
                           "Accept": "application/json",
                           "Content-Type": "application/json"
@@ -241,18 +260,16 @@
                         "authentication": {
                           "type": "ManagedServiceIdentity",
                           "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                          "audience": "https://graph.microsoft.com"
+                          "audience": "https://api.securitycenter.microsoft.com"
                         },
                         "body": {
-                          "action": "block",
-                          "targetProduct": "Microsoft Defender ATP",
-                          "threatType": "WatchList",
-                          "tlpLevel": "amber",
-                          "azureTenantId": "@{parameters('AzureTenantId')}",
-                          "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
-                          "fileHashType": "@{outputs('Compose_Hash_Algorithm')}",
-                          "fileHashValue": "@{outputs('Compose_Clean_Hash')}",
-                          "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                          "indicatorValue": "@{outputs('Compose_Clean_Hash')}",
+                          "indicatorType": "@{outputs('Compose_Indicator_Type')}",
+                          "action": "@{parameters('Action')}",
+                          "title": "@{concat('ErgoSOC-AU block: ', outputs('Compose_Clean_Hash'))}",
+                          "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
+                          "severity": "High",
+                          "expirationTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
                         }
                       },
                       "runtimeConfiguration": {
@@ -275,7 +292,7 @@
                       "type": "SetVariable",
                       "inputs": {
                         "name": "BlockResult",
-                        "value": "@if(or(equals(outputs('HTTP_SubmitIndicator')?['statusCode'], 200), equals(outputs('HTTP_SubmitIndicator')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIndicator')?['body']), 'no error detail returned'))))"
+                        "value": "@if(or(equals(outputs('HTTP_SubmitIndicator')?['statusCode'], 200)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIndicator')?['body']), 'no error detail returned'))))"
                       }
                     }
                   },
@@ -286,7 +303,7 @@
                         "type": "SetVariable",
                         "inputs": {
                           "name": "BlockResult",
-                          "value": "skipped - hash value or algorithm could not be determined for this entity"
+                          "value": "skipped - hash value or algorithm could not be determined for this entity (only SHA256/SHA1/MD5 supported)"
                         }
                       }
                     }
@@ -299,7 +316,7 @@
                     ]
                   },
                   "type": "Compose",
-                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block file hash indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Hash</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\"><code>@{outputs('Compose_Clean_Hash')}</code></td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Algorithm</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Hash_Algorithm')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Microsoft Defender ATP)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('BlockResult')}</td></tr></table>"
+                  "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block file hash indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Hash</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\"><code>@{outputs('Compose_Clean_Hash')}</code></td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Algorithm</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Hash_Algorithm')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Defender for Endpoint)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('BlockResult')}</td></tr></table>"
                 },
                 "Compose_Entity_Comment_Safe": {
                   "runAfter": {
@@ -352,8 +369,8 @@
               }
             }
           },
-          "AzureTenantId": {
-            "value": "[parameters('AzureTenantId')]"
+          "Action": {
+            "value": "[parameters('Action')]"
           },
           "IndicatorExpirationDays": {
             "value": "[parameters('IndicatorExpirationDays')]"

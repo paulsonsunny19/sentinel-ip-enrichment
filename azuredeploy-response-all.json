@@ -3,7 +3,7 @@
   "contentVersion": "1.0.0.0",
   "metadata": {
     "title": "Deploy all seven ErgoSOC-AU response playbooks in one deployment",
-    "description": "Deploys all seven response (remediation) playbooks -- Account revoke+reset, Account disable+confirm-compromised, Account revoke-app-consent, Device isolate+scan+restrict, Email block+quarantine, FileHash block-indicator, and IP/URL block-indicator -- together as nested deployments, all bound to the same client-owned user-assigned managed identity. PlaybookName is exposed per playbook (e.g. AccountContainPlaybookName, DeviceContainPlaybookName, ...) since each Logic App needs a distinct name; AzureTenantId and IndicatorExpirationDays are merged into one shared parameter each, applied to both the FileHash and IP/URL block-indicator playbooks. Everything else keeps its own per-playbook name. The Email block playbook's AutoExecuteBlock stays off by default here too; turning it on additionally requires deploying azuredeploy-automation-account-response.json -- see README-RESPONSE.md. SAFETY: none of the seven are wired to a Sentinel automation rule by this template -- an analyst manually running a playbook from the incident is still the approval gate for every one of them.",
+    "description": "Deploys all seven response (remediation) playbooks -- Account revoke+reset, Account disable+confirm-compromised, Account revoke-app-consent, Device isolate+scan+restrict, Email block+quarantine, FileHash block-indicator, and IP/URL block-indicator -- together as nested deployments, all bound to the same client-owned user-assigned managed identity. PlaybookName is exposed per playbook (e.g. AccountContainPlaybookName, DeviceContainPlaybookName, ...) since each Logic App needs a distinct name; Action and IndicatorExpirationDays are merged into one shared parameter each, applied to both the FileHash and IP/URL block-indicator playbooks. Everything else keeps its own per-playbook name. The Email block playbook's AutoExecuteBlock stays off by default here too; turning it on additionally requires deploying azuredeploy-automation-account-response.json -- see README-RESPONSE.md. SAFETY: none of the seven are wired to a Sentinel automation rule by this template -- an analyst manually running a playbook from the incident is still the approval gate for every one of them.",
     "prerequisites": "One existing user-assigned managed identity, already granted every Microsoft Graph, WindowsDefenderATP, and Azure RBAC permission listed in README-RESPONSE.md's permissions table for whichever of these playbooks you intend to use. A permission a given playbook lacks doesn't block the others -- each fails independently (every write call reports its own success/failure to the incident comment, nothing is assumed).",
     "postDeployment": [
       "Authorise the Microsoft Sentinel API connection for each playbook in this bundle.",
@@ -181,11 +181,20 @@
         "description": "Name of the Logic App playbook."
       }
     },
-    "AzureTenantId": {
+    "Action": {
       "type": "string",
-      "defaultValue": "[subscription().tenantId]",
+      "defaultValue": "Block",
+      "allowedValues": [
+        "Alert",
+        "Warn",
+        "Block",
+        "Audit",
+        "BlockAndRemediate",
+        "AlertAndBlock",
+        "Allowed"
+      ],
       "metadata": {
-        "description": "Shared by the FileHash and IP/URL block-indicator playbooks. Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."
+        "description": "Shared by the FileHash and IP/URL block-indicator playbooks. Defender for Endpoint indicator action. Block prevents access/execution with no alert; AlertAndBlock also raises a Defender alert; BlockAndRemediate additionally remediates existing instances."
       }
     },
     "IndicatorExpirationDays": {
@@ -3427,15 +3436,15 @@
           "contentVersion": "1.0.0.0",
           "metadata": {
             "title": "Response: block file hash indicator tenant-wide for FileHash entities",
-            "description": "For each FileHash entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Microsoft Graph's threat indicator API, targeted at Microsoft Defender ATP so Defender for Endpoint enforces it across managed devices. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
-            "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission ThreatIndicators.ReadWrite.OwnedBy.",
+            "description": "For each FileHash entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Defender for Endpoint's own indicators API, so Defender for Endpoint enforces it across managed devices. Supports SHA256/SHA1/MD5. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+            "prerequisites": "One existing user-assigned managed identity, granted the WindowsDefenderATP (not Microsoft Graph) application permission Ti.ReadWrite.All.",
             "postDeployment": [
               "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
-              "Grant the managed identity the ThreatIndicators.ReadWrite.OwnedBy Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
+              "Grant the managed identity the Ti.ReadWrite.All application permission on the WindowsDefenderATP API (app ID fc780465-2017-40d4-a0c5-307022471b92 -- not Microsoft Graph) via an app-role assignment, then allow time for token propagation.",
               "Authorise the Microsoft Sentinel API connection.",
               "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."
             ],
-            "lastUpdateTime": "2026-09-02",
+            "lastUpdateTime": "2026-09-04",
             "entities": [
               "FileHash"
             ],
@@ -3464,11 +3473,20 @@
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
               }
             },
-            "AzureTenantId": {
+            "Action": {
               "type": "string",
-              "defaultValue": "[subscription().tenantId]",
+              "defaultValue": "Block",
+              "allowedValues": [
+                "Alert",
+                "Warn",
+                "Block",
+                "Audit",
+                "BlockAndRemediate",
+                "AlertAndBlock",
+                "Allowed"
+              ],
               "metadata": {
-                "description": "Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."
+                "description": "Defender for Endpoint indicator action. Block prevents execution/access with no alert; AlertAndBlock also raises a Defender alert; BlockAndRemediate additionally remediates existing instances."
               }
             },
             "IndicatorExpirationDays": {
@@ -3477,7 +3495,7 @@
               "minValue": 0,
               "maxValue": 365,
               "metadata": {
-                "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration instead of omitting the field -- Graph's tiIndicators API treats expirationDateTime as required, and there's no confirmed null/omit behavior for a genuinely permanent indicator)."
+                "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration)."
               }
             }
           },
@@ -3528,8 +3546,9 @@
                       "defaultValue": {},
                       "type": "Object"
                     },
-                    "AzureTenantId": {
-                      "type": "String"
+                    "Action": {
+                      "type": "String",
+                      "defaultValue": "Block"
                     },
                     "IndicatorExpirationDays": {
                       "type": "Int",
@@ -3622,11 +3641,20 @@
                             ]
                           },
                           "type": "Compose",
-                          "inputs": "@toLower(string(coalesce(items('For_each_FileHash_entity')?['Algorithm'], items('For_each_FileHash_entity')?['algorithm'], if(equals(length(outputs('Compose_Clean_Hash')), 64), 'SHA256', if(equals(length(outputs('Compose_Clean_Hash')), 40), 'SHA1', if(equals(length(outputs('Compose_Clean_Hash')), 32), 'MD5', 'Unknown'))))))"
+                          "inputs": "@coalesce(items('For_each_FileHash_entity')?['Algorithm'], items('For_each_FileHash_entity')?['algorithm'], if(equals(length(outputs('Compose_Clean_Hash')), 64), 'SHA256', if(equals(length(outputs('Compose_Clean_Hash')), 40), 'SHA1', if(equals(length(outputs('Compose_Clean_Hash')), 32), 'MD5', 'Unknown'))))"
+                        },
+                        "Compose_Indicator_Type": {
+                          "runAfter": {
+                            "Compose_Hash_Algorithm": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "Compose",
+                          "inputs": "@if(equals(toUpper(outputs('Compose_Hash_Algorithm')), 'SHA256'), 'FileSha256', if(equals(toUpper(outputs('Compose_Hash_Algorithm')), 'SHA1'), 'FileSha1', if(equals(toUpper(outputs('Compose_Hash_Algorithm')), 'MD5'), 'FileMd5', '')))"
                         },
                         "Condition_Has_Hash": {
                           "runAfter": {
-                            "Compose_Hash_Algorithm": [
+                            "Compose_Indicator_Type": [
                               "Succeeded"
                             ]
                           },
@@ -3644,8 +3672,8 @@
                               {
                                 "not": {
                                   "equals": [
-                                    "@outputs('Compose_Hash_Algorithm')",
-                                    "unknown"
+                                    "@outputs('Compose_Indicator_Type')",
+                                    ""
                                   ]
                                 }
                               }
@@ -3657,7 +3685,7 @@
                               "type": "Http",
                               "inputs": {
                                 "method": "POST",
-                                "uri": "https://graph.microsoft.com/beta/security/tiIndicators",
+                                "uri": "https://api.security.microsoft.com/api/indicators",
                                 "headers": {
                                   "Accept": "application/json",
                                   "Content-Type": "application/json"
@@ -3665,18 +3693,16 @@
                                 "authentication": {
                                   "type": "ManagedServiceIdentity",
                                   "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                                  "audience": "https://graph.microsoft.com"
+                                  "audience": "https://api.securitycenter.microsoft.com"
                                 },
                                 "body": {
-                                  "action": "block",
-                                  "targetProduct": "Microsoft Defender ATP",
-                                  "threatType": "WatchList",
-                                  "tlpLevel": "amber",
-                                  "azureTenantId": "@{parameters('AzureTenantId')}",
-                                  "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
-                                  "fileHashType": "@{outputs('Compose_Hash_Algorithm')}",
-                                  "fileHashValue": "@{outputs('Compose_Clean_Hash')}",
-                                  "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                                  "indicatorValue": "@{outputs('Compose_Clean_Hash')}",
+                                  "indicatorType": "@{outputs('Compose_Indicator_Type')}",
+                                  "action": "@{parameters('Action')}",
+                                  "title": "@{concat('ErgoSOC-AU block: ', outputs('Compose_Clean_Hash'))}",
+                                  "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
+                                  "severity": "High",
+                                  "expirationTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -3699,7 +3725,7 @@
                               "type": "SetVariable",
                               "inputs": {
                                 "name": "BlockResult",
-                                "value": "@if(or(equals(outputs('HTTP_SubmitIndicator')?['statusCode'], 200), equals(outputs('HTTP_SubmitIndicator')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIndicator')?['body']), 'no error detail returned'))))"
+                                "value": "@if(or(equals(outputs('HTTP_SubmitIndicator')?['statusCode'], 200)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIndicator')?['body']), 'no error detail returned'))))"
                               }
                             }
                           },
@@ -3710,7 +3736,7 @@
                                 "type": "SetVariable",
                                 "inputs": {
                                   "name": "BlockResult",
-                                  "value": "skipped - hash value or algorithm could not be determined for this entity"
+                                  "value": "skipped - hash value or algorithm could not be determined for this entity (only SHA256/SHA1/MD5 supported)"
                                 }
                               }
                             }
@@ -3723,7 +3749,7 @@
                             ]
                           },
                           "type": "Compose",
-                          "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block file hash indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Hash</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\"><code>@{outputs('Compose_Clean_Hash')}</code></td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Algorithm</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Hash_Algorithm')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Microsoft Defender ATP)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('BlockResult')}</td></tr></table>"
+                          "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block file hash indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Hash</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\"><code>@{outputs('Compose_Clean_Hash')}</code></td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Algorithm</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>@{outputs('Compose_Hash_Algorithm')}</td><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;'>manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Defender for Endpoint)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('BlockResult')}</td></tr></table>"
                         },
                         "Compose_Entity_Comment_Safe": {
                           "runAfter": {
@@ -3776,8 +3802,8 @@
                       }
                     }
                   },
-                  "AzureTenantId": {
-                    "value": "[parameters('AzureTenantId')]"
+                  "Action": {
+                    "value": "[parameters('Action')]"
                   },
                   "IndicatorExpirationDays": {
                     "value": "[parameters('IndicatorExpirationDays')]"
@@ -3812,8 +3838,8 @@
           "PlaybookName": {
             "value": "[parameters('FileHashBlockPlaybookName')]"
           },
-          "AzureTenantId": {
-            "value": "[parameters('AzureTenantId')]"
+          "Action": {
+            "value": "[parameters('Action')]"
           },
           "IndicatorExpirationDays": {
             "value": "[parameters('IndicatorExpirationDays')]"
@@ -3835,15 +3861,15 @@
           "contentVersion": "1.0.0.0",
           "metadata": {
             "title": "Response: block IP and/or URL indicator tenant-wide",
-            "description": "For each IP and/or URL entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Microsoft Graph's threat indicator API, targeted at Microsoft Defender ATP so Defender for Endpoint enforces it. Each entity type has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
-            "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission ThreatIndicators.ReadWrite.OwnedBy.",
+            "description": "For each IP and/or URL entity on a Microsoft Sentinel incident, submits a tenant-wide block indicator via Defender for Endpoint's own indicators API, so Defender for Endpoint enforces it. Each entity type has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+            "prerequisites": "One existing user-assigned managed identity, granted the WindowsDefenderATP (not Microsoft Graph) application permission Ti.ReadWrite.All.",
             "postDeployment": [
               "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
-              "Grant the managed identity the ThreatIndicators.ReadWrite.OwnedBy Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
+              "Grant the managed identity the Ti.ReadWrite.All application permission on the WindowsDefenderATP API (app ID fc780465-2017-40d4-a0c5-307022471b92 -- not Microsoft Graph) via an app-role assignment, then allow time for token propagation.",
               "Authorise the Microsoft Sentinel API connection.",
               "Do NOT attach this playbook to an automation rule unless your team has explicitly decided it should run without human approval. Run it manually from the incident's Actions menu instead."
             ],
-            "lastUpdateTime": "2026-09-02",
+            "lastUpdateTime": "2026-09-04",
             "entities": [
               "IP",
               "URL"
@@ -3888,11 +3914,20 @@
                 "description": "Submit a block indicator for each URL entity on the incident."
               }
             },
-            "AzureTenantId": {
+            "Action": {
               "type": "string",
-              "defaultValue": "[subscription().tenantId]",
+              "defaultValue": "Block",
+              "allowedValues": [
+                "Alert",
+                "Warn",
+                "Block",
+                "Audit",
+                "BlockAndRemediate",
+                "AlertAndBlock",
+                "Allowed"
+              ],
               "metadata": {
-                "description": "Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."
+                "description": "Defender for Endpoint indicator action, applied to both IP and URL submissions. Block prevents access with no alert; AlertAndBlock also raises a Defender alert."
               }
             },
             "IndicatorExpirationDays": {
@@ -3901,7 +3936,7 @@
               "minValue": 0,
               "maxValue": 365,
               "metadata": {
-                "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration instead of omitting the field -- Graph's tiIndicators API treats expirationDateTime as required, and there's no confirmed null/omit behavior for a genuinely permanent indicator)."
+                "description": "How many days out from submission each block indicator expires. Set to 0 for effectively never (submits a 2099 expiration)."
               }
             }
           },
@@ -3960,8 +3995,9 @@
                       "type": "Bool",
                       "defaultValue": true
                     },
-                    "AzureTenantId": {
-                      "type": "String"
+                    "Action": {
+                      "type": "String",
+                      "defaultValue": "Block"
                     },
                     "IndicatorExpirationDays": {
                       "type": "Int",
@@ -4065,132 +4101,66 @@
                                 "value": ""
                               }
                             },
-                            "Condition_Is_IPv6": {
+                            "HTTP_SubmitIpIndicator": {
                               "runAfter": {
                                 "Reset_IpBlockResult": [
                                   "Succeeded"
                                 ]
                               },
-                              "type": "If",
-                              "expression": {
-                                "equals": [
-                                  "@contains(items('For_each_IP_entity')?['Address'], ':')",
-                                  true
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "https://api.security.microsoft.com/api/indicators",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "authentication": {
+                                  "type": "ManagedServiceIdentity",
+                                  "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                                  "audience": "https://api.securitycenter.microsoft.com"
+                                },
+                                "body": {
+                                  "indicatorValue": "@{items('For_each_IP_entity')?['Address']}",
+                                  "indicatorType": "IpAddress",
+                                  "action": "@{parameters('Action')}",
+                                  "title": "@{concat('ErgoSOC-AU block: ', items('For_each_IP_entity')?['Address'])}",
+                                  "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
+                                  "severity": "High",
+                                  "expirationTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            },
+                            "Set_IpBlockResult": {
+                              "runAfter": {
+                                "HTTP_SubmitIpIndicator": [
+                                  "Succeeded",
+                                  "Failed",
+                                  "Skipped",
+                                  "TimedOut"
                                 ]
                               },
-                              "actions": {
-                                "HTTP_SubmitIpIndicator_V6": {
-                                  "runAfter": {},
-                                  "type": "Http",
-                                  "inputs": {
-                                    "method": "POST",
-                                    "uri": "https://graph.microsoft.com/beta/security/tiIndicators",
-                                    "headers": {
-                                      "Accept": "application/json",
-                                      "Content-Type": "application/json"
-                                    },
-                                    "authentication": {
-                                      "type": "ManagedServiceIdentity",
-                                      "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                                      "audience": "https://graph.microsoft.com"
-                                    },
-                                    "body": {
-                                      "action": "block",
-                                      "targetProduct": "Microsoft Defender ATP",
-                                      "threatType": "WatchList",
-                                      "tlpLevel": "amber",
-                                      "azureTenantId": "@{parameters('AzureTenantId')}",
-                                      "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
-                                      "networkIPv6": "@{items('For_each_IP_entity')?['Address']}",
-                                      "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
-                                    }
-                                  },
-                                  "runtimeConfiguration": {
-                                    "secureData": {
-                                      "properties": [
-                                        "inputs"
-                                      ]
-                                    }
-                                  }
-                                },
-                                "Set_IpBlockResult_V6": {
-                                  "runAfter": {
-                                    "HTTP_SubmitIpIndicator_V6": [
-                                      "Succeeded",
-                                      "Failed",
-                                      "Skipped",
-                                      "TimedOut"
-                                    ]
-                                  },
-                                  "type": "SetVariable",
-                                  "inputs": {
-                                    "name": "IpBlockResult",
-                                    "value": "@if(or(equals(outputs('HTTP_SubmitIpIndicator_V6')?['statusCode'], 200), equals(outputs('HTTP_SubmitIpIndicator_V6')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIpIndicator_V6')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIpIndicator_V6')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIpIndicator_V6')?['body']), 'no error detail returned'))))"
-                                  }
-                                }
-                              },
-                              "else": {
-                                "actions": {
-                                  "HTTP_SubmitIpIndicator_V4": {
-                                    "runAfter": {},
-                                    "type": "Http",
-                                    "inputs": {
-                                      "method": "POST",
-                                      "uri": "https://graph.microsoft.com/beta/security/tiIndicators",
-                                      "headers": {
-                                        "Accept": "application/json",
-                                        "Content-Type": "application/json"
-                                      },
-                                      "authentication": {
-                                        "type": "ManagedServiceIdentity",
-                                        "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                                        "audience": "https://graph.microsoft.com"
-                                      },
-                                      "body": {
-                                        "action": "block",
-                                        "targetProduct": "Microsoft Defender ATP",
-                                        "threatType": "WatchList",
-                                        "tlpLevel": "amber",
-                                        "azureTenantId": "@{parameters('AzureTenantId')}",
-                                        "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
-                                        "networkIPv4": "@{items('For_each_IP_entity')?['Address']}",
-                                        "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
-                                      }
-                                    },
-                                    "runtimeConfiguration": {
-                                      "secureData": {
-                                        "properties": [
-                                          "inputs"
-                                        ]
-                                      }
-                                    }
-                                  },
-                                  "Set_IpBlockResult_V4": {
-                                    "runAfter": {
-                                      "HTTP_SubmitIpIndicator_V4": [
-                                        "Succeeded",
-                                        "Failed",
-                                        "Skipped",
-                                        "TimedOut"
-                                      ]
-                                    },
-                                    "type": "SetVariable",
-                                    "inputs": {
-                                      "name": "IpBlockResult",
-                                      "value": "@if(or(equals(outputs('HTTP_SubmitIpIndicator_V4')?['statusCode'], 200), equals(outputs('HTTP_SubmitIpIndicator_V4')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIpIndicator_V4')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIpIndicator_V4')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIpIndicator_V4')?['body']), 'no error detail returned'))))"
-                                    }
-                                  }
-                                }
+                              "type": "SetVariable",
+                              "inputs": {
+                                "name": "IpBlockResult",
+                                "value": "@if(or(equals(outputs('HTTP_SubmitIpIndicator')?['statusCode'], 200)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIpIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIpIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIpIndicator')?['body']), 'no error detail returned'))))"
                               }
                             },
                             "Compose_Entity_Comment_IP": {
                               "runAfter": {
-                                "Condition_Is_IPv6": [
+                                "Set_IpBlockResult": [
                                   "Succeeded"
                                 ]
                               },
                               "type": "Compose",
-                              "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block IP indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>IP address</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{items('For_each_IP_entity')?['Address']}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Microsoft Defender ATP)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('IpBlockResult')}</td></tr></table>"
+                              "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block IP indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>IP address</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{items('For_each_IP_entity')?['Address']}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Defender for Endpoint)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('IpBlockResult')}</td></tr></table>"
                             },
                             "Compose_Entity_Comment_Safe_IP": {
                               "runAfter": {
@@ -4297,7 +4267,7 @@
                               "type": "Http",
                               "inputs": {
                                 "method": "POST",
-                                "uri": "https://graph.microsoft.com/beta/security/tiIndicators",
+                                "uri": "https://api.security.microsoft.com/api/indicators",
                                 "headers": {
                                   "Accept": "application/json",
                                   "Content-Type": "application/json"
@@ -4305,17 +4275,16 @@
                                 "authentication": {
                                   "type": "ManagedServiceIdentity",
                                   "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                                  "audience": "https://graph.microsoft.com"
+                                  "audience": "https://api.securitycenter.microsoft.com"
                                 },
                                 "body": {
-                                  "action": "block",
-                                  "targetProduct": "Microsoft Defender ATP",
-                                  "threatType": "WatchList",
-                                  "tlpLevel": "amber",
-                                  "azureTenantId": "@{parameters('AzureTenantId')}",
-                                  "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
-                                  "url": "@{outputs('Compose_Clean_Url')}",
-                                  "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
+                                  "indicatorValue": "@{outputs('Compose_Clean_Url')}",
+                                  "indicatorType": "Url",
+                                  "action": "@{parameters('Action')}",
+                                  "title": "@{concat('ErgoSOC-AU block: ', outputs('Compose_Clean_Url'))}",
+                                  "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
+                                  "severity": "High",
+                                  "expirationTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -4338,7 +4307,7 @@
                               "type": "SetVariable",
                               "inputs": {
                                 "name": "UrlBlockResult",
-                                "value": "@if(or(equals(outputs('HTTP_SubmitUrlIndicator')?['statusCode'], 200), equals(outputs('HTTP_SubmitUrlIndicator')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitUrlIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitUrlIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitUrlIndicator')?['body']), 'no error detail returned'))))"
+                                "value": "@if(or(equals(outputs('HTTP_SubmitUrlIndicator')?['statusCode'], 200)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitUrlIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitUrlIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitUrlIndicator')?['body']), 'no error detail returned'))))"
                               }
                             },
                             "Compose_Entity_Comment_URL": {
@@ -4348,7 +4317,7 @@
                                 ]
                               },
                               "type": "Compose",
-                              "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block URL indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>URL</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_Clean_Url')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Microsoft Defender ATP)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('UrlBlockResult')}</td></tr></table>"
+                              "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block URL indicator &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>URL</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_Clean_Url')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Defender for Endpoint)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('UrlBlockResult')}</td></tr></table>"
                             },
                             "Compose_Entity_Comment_Safe_URL": {
                               "runAfter": {
@@ -4412,8 +4381,8 @@
                   "BlockUrl": {
                     "value": "[parameters('BlockUrl')]"
                   },
-                  "AzureTenantId": {
-                    "value": "[parameters('AzureTenantId')]"
+                  "Action": {
+                    "value": "[parameters('Action')]"
                   },
                   "IndicatorExpirationDays": {
                     "value": "[parameters('IndicatorExpirationDays')]"
@@ -4454,8 +4423,8 @@
           "BlockUrl": {
             "value": "[parameters('BlockUrl')]"
           },
-          "AzureTenantId": {
-            "value": "[parameters('AzureTenantId')]"
+          "Action": {
+            "value": "[parameters('Action')]"
           },
           "IndicatorExpirationDays": {
             "value": "[parameters('IndicatorExpirationDays')]"

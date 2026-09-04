@@ -85,8 +85,8 @@ done
 | Email: block + quarantine (assisted mode) | none | — no write call made |
 | Email: block + quarantine (auto-execute mode) — Logic App's own UAMI | `Automation Job Operator` Azure RBAC role, scoped to the Automation Account | Azure Resource Manager, not Graph |
 | Email: block + quarantine (auto-execute mode) — Automation Account's dedicated identity | `Tenant AllowBlockList Manager` role group | **Exchange Online's own RBAC**, not Azure RBAC or a Graph app role |
-| FileHash: block indicator | `ThreatIndicators.ReadWrite.OwnedBy` | Microsoft Graph |
-| IP/URL: block indicator | `ThreatIndicators.ReadWrite.OwnedBy` | Microsoft Graph |
+| FileHash: block indicator | `Ti.ReadWrite.All` | **WindowsDefenderATP** (not Microsoft Graph — see note below) |
+| IP/URL: block indicator | `Ti.ReadWrite.All` | **WindowsDefenderATP** (not Microsoft Graph — see note below) |
 
 For the WindowsDefenderATP grant, swap `GRAPH_APP_ID` for `WDATP_APP_ID=fc780465-2017-40d4-a0c5-307022471b92`
 in the loop above. If `az ad sp show --id "$WDATP_APP_ID"` returns nothing, that service principal
@@ -106,6 +106,36 @@ az role assignment create \
 ```
 
 Allow several minutes for new role assignments to propagate before testing any of these.
+
+### Why FileHash/IP/URL block use WindowsDefenderATP, not Microsoft Graph
+
+This took three attempts to get right, worth documenting so nobody rediscovers the same dead ends.
+The FileHash and IP/URL block-indicator playbooks originally called Microsoft Graph's
+`security/tiIndicators`. In order:
+
+1. `v1.0/security/tiIndicators` — 400, "Resource not found for the segment 'tiIndicators'". That
+   resource was never promoted to v1.0, only `beta`.
+2. `beta/security/tiIndicators` — 400, "The ISG Graph API has been deprecated as of April 2026."
+   Microsoft's own deprecation notice for `tiIndicator` points at Sentinel's native
+   `Microsoft.SecurityInsights/threatIntelligenceIndicators` ARM resource — but that one feeds
+   Sentinel's own analytics-rule *matching/alerting*, not enforcement; submitting an indicator
+   there doesn't block anything on a device, a real capability gap versus what these playbooks are
+   for.
+3. **Defender for Endpoint's own indicators API** (`POST https://api.security.microsoft.com/api/indicators`)
+   — a separate product surface from the deprecated Graph "ISG" layer, unaffected by that
+   deprecation, and it's what actually enforces the block on managed devices. This is what both
+   playbooks use now. It reuses the same `Ti.ReadWrite.All` **WindowsDefenderATP** application
+   permission family as the device-containment playbook's `Machine.Isolate`/`Machine.Scan`/
+   `Machine.RestrictExecution` — same enterprise app (ID `fc780465-2017-40d4-a0c5-307022471b92`),
+   same `az rest` grant pattern, different role name.
+
+One side effect: this API's `indicatorType: "IpAddress"` covers both IPv4 and IPv6 in one
+submission, so the IP/URL playbook no longer needs separate v4/v6 branching — one HTTP call per IP
+entity.
+
+If you'd previously granted `ThreatIndicators.ReadWrite.OwnedBy` on Microsoft Graph for these two
+playbooks per earlier guidance, it's now unused and safe to remove — replace it with
+`Ti.ReadWrite.All` on WindowsDefenderATP per the table above.
 
 ## Why the email playbook is assisted by default
 
@@ -231,7 +261,7 @@ az deployment group create \
 (`AccountContainPlaybookName`, `AccountDisablePlaybookName`, `AccountRevokeConsentPlaybookName`,
 `DeviceContainPlaybookName`, `EmailBlockPlaybookName`, `FileHashBlockPlaybookName`,
 `IndicatorBlockPlaybookName`), each still defaulting to that playbook's own original name.
-`AzureTenantId` and `IndicatorExpirationDays` are merged into one shared parameter each (both the
+`Action` and `IndicatorExpirationDays` are merged into one shared parameter each (both the
 FileHash and IP/URL block-indicator playbooks have them, same meaning). Everything else keeps its
 own per-playbook name — 26 master parameters in total.
 
