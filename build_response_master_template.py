@@ -62,8 +62,8 @@ MERGE_PARAMS = {
         "metadata": {"description": "Shared by the FileHash and IP/URL block-indicator playbooks. Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."},
     },
     "IndicatorExpirationDays": {
-        "type": "int", "defaultValue": 180, "minValue": 1, "maxValue": 365,
-        "metadata": {"description": "Shared by the FileHash and IP/URL block-indicator playbooks. How many days out from submission each block indicator expires."},
+        "type": "int", "defaultValue": 180, "minValue": 0, "maxValue": 365,
+        "metadata": {"description": "Shared by the FileHash and IP/URL block-indicator playbooks. How many days out from submission each block indicator expires. Set to 0 for effectively never (submits a 2099 expiration -- see each playbook's own parameter description for why)."},
     },
 }
 

@@ -133,10 +133,10 @@
     "IndicatorExpirationDays": {
       "type": "int",
       "defaultValue": 180,
-      "minValue": 1,
+      "minValue": 0,
       "maxValue": 365,
       "metadata": {
-        "description": "Shared by the FileHash and IP/URL block-indicator playbooks. How many days out from submission each block indicator expires."
+        "description": "Shared by the FileHash and IP/URL block-indicator playbooks. How many days out from submission each block indicator expires. Set to 0 for effectively never (submits a 2099 expiration -- see each playbook's own parameter description for why)."
       }
     },
     "IndicatorBlockPlaybookName": {
@@ -2704,10 +2704,10 @@
             "IndicatorExpirationDays": {
               "type": "int",
               "defaultValue": 180,
-              "minValue": 1,
+              "minValue": 0,
               "maxValue": 365,
               "metadata": {
-                "description": "How many days out from submission the block indicator expires."
+                "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration instead of omitting the field -- Graph's tiIndicators API treats expirationDateTime as required, and there's no confirmed null/omit behavior for a genuinely permanent indicator)."
               }
             }
           },
@@ -2903,7 +2903,7 @@
                                   "threatType": "WatchList",
                                   "tlpLevel": "amber",
                                   "azureTenantId": "@{parameters('AzureTenantId')}",
-                                  "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                                  "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
                                   "fileHashType": "@{outputs('Compose_Hash_Algorithm')}",
                                   "fileHashValue": "@{outputs('Compose_Clean_Hash')}",
                                   "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
@@ -3128,10 +3128,10 @@
             "IndicatorExpirationDays": {
               "type": "int",
               "defaultValue": 180,
-              "minValue": 1,
+              "minValue": 0,
               "maxValue": 365,
               "metadata": {
-                "description": "How many days out from submission the block indicator expires."
+                "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration instead of omitting the field -- Graph's tiIndicators API treats expirationDateTime as required, and there's no confirmed null/omit behavior for a genuinely permanent indicator)."
               }
             }
           },
@@ -3330,7 +3330,7 @@
                                       "threatType": "WatchList",
                                       "tlpLevel": "amber",
                                       "azureTenantId": "@{parameters('AzureTenantId')}",
-                                      "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                                      "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
                                       "networkIPv6": "@{items('For_each_IP_entity')?['Address']}",
                                       "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
                                     }
@@ -3382,7 +3382,7 @@
                                         "threatType": "WatchList",
                                         "tlpLevel": "amber",
                                         "azureTenantId": "@{parameters('AzureTenantId')}",
-                                        "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                                        "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
                                         "networkIPv4": "@{items('For_each_IP_entity')?['Address']}",
                                         "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
                                       }
@@ -3539,7 +3539,7 @@
                                   "threatType": "WatchList",
                                   "tlpLevel": "amber",
                                   "azureTenantId": "@{parameters('AzureTenantId')}",
-                                  "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+                                  "expirationDateTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}",
                                   "url": "@{outputs('Compose_Clean_Url')}",
                                   "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident."
                                 }

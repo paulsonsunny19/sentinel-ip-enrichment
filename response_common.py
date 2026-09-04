@@ -49,6 +49,17 @@ ARM_AUTH = managed_identity_authentication("https://management.azure.com/")
 
 SENTINEL_CONN = "@parameters('$connections')['azuresentinel']['connectionId']"
 
+# tiIndicators' expirationDateTime reads as a required field in Microsoft
+# Graph's threat-indicator API -- omitting it to get a genuinely permanent
+# indicator isn't something we could verify (docs were unreachable this
+# session), so IndicatorExpirationDays=0 is treated as "effectively never"
+# by submitting a far-future date instead, rather than risking a rejected
+# submission on an unconfirmed null/omit behavior.
+INDICATOR_EXPIRATION_EXPR = (
+    "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', "
+    "addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
+)
+
 TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;"
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;"
 

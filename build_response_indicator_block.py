@@ -24,6 +24,7 @@ import pathlib
 
 from response_common import (
     GRAPH_AUTH,
+    INDICATOR_EXPIRATION_EXPR,
     TD,
     TH,
     after,
@@ -73,7 +74,7 @@ def base_indicator_body(observable_field, observable_value_expr):
         "threatType": "WatchList",
         "tlpLevel": "amber",
         "azureTenantId": "@{parameters('AzureTenantId')}",
-        "expirationDateTime": "@{addDays(utcNow(), parameters('IndicatorExpirationDays'))}",
+        "expirationDateTime": INDICATOR_EXPIRATION_EXPR,
         observable_field: f"@{{{observable_value_expr}}}",
         "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
     }
@@ -306,8 +307,8 @@ def build_template():
                 "metadata": {"description": "Azure AD tenant ID, required by the tiIndicators API. Defaults to the deploying subscription's tenant."},
             },
             "IndicatorExpirationDays": {
-                "type": "int", "defaultValue": 180, "minValue": 1, "maxValue": 365,
-                "metadata": {"description": "How many days out from submission the block indicator expires."},
+                "type": "int", "defaultValue": 180, "minValue": 0, "maxValue": 365,
+                "metadata": {"description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration instead of omitting the field -- Graph's tiIndicators API treats expirationDateTime as required, and there's no confirmed null/omit behavior for a genuinely permanent indicator)."},
             },
         },
         "variables": {
