@@ -268,7 +268,15 @@ def build_definition():
     }
 
 
-def build_template():
+def build_template(
+    default_playbook_name="ErgoSOC-AU-Account-RevokeAndReset",
+    template_name=None,
+    default_revoke=True,
+    default_reset=True,
+    title=None,
+    description=None,
+):
+    template_name = template_name or default_playbook_name
     definition = build_definition()
     # Workflow-scoped variables need Init actions; inject them at the front of
     # the top-level actions dict (before Entities_-_Get_Accounts) since Python
@@ -296,8 +304,8 @@ def build_template():
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
         "contentVersion": "1.0.0.0",
         "metadata": {
-            "title": "Response: revoke sign-in sessions and/or reset password for Account entities",
-            "description": "For each Account entity on a Microsoft Sentinel incident, revokes all active sign-in sessions and/or forces a password reset (with a temporary password that is never logged or displayed). Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+            "title": title or "Response: revoke sign-in sessions and/or reset password for Account entities",
+            "description": description or "For each Account entity on a Microsoft Sentinel incident, revokes all active sign-in sessions and/or forces a password reset (with a temporary password that is never logged or displayed). Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
             "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission User.ReadWrite.All (covers both revokeSignInSessions and the password reset).",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
@@ -311,13 +319,13 @@ def build_template():
             "support": {"tier": "community"},
         },
         "parameters": {
-            **base_parameters("ErgoSOC-AU-Account-RevokeAndReset"),
+            **base_parameters(default_playbook_name),
             "RevokeSessions": {
-                "type": "bool", "defaultValue": True,
+                "type": "bool", "defaultValue": default_revoke,
                 "metadata": {"description": "Revoke all of the user's active sign-in sessions (Graph revokeSignInSessions)."},
             },
             "ResetPassword": {
-                "type": "bool", "defaultValue": True,
+                "type": "bool", "defaultValue": default_reset,
                 "metadata": {"description": "Force a password reset with a random temporary password (never logged or displayed) and require the user to change it at next sign-in."},
             },
         },
@@ -328,7 +336,7 @@ def build_template():
             sentinel_connection_resource(),
             workflow_resource(
                 definition,
-                "ErgoSOC-AU-Account-RevokeAndReset",
+                template_name,
                 extra_deploy_parameters={
                     "RevokeSessions": {"value": "[parameters('RevokeSessions')]"},
                     "ResetPassword": {"value": "[parameters('ResetPassword')]"},
@@ -342,3 +350,24 @@ def build_template():
 
 if __name__ == "__main__":
     write_template(build_template(), "azuredeploy-response-account-contain.json", HERE)
+
+    write_template(
+        build_template(
+            default_playbook_name="ErgoSOC-AU-Account-RevokeSessions",
+            default_revoke=True,
+            default_reset=False,
+            title="Response: revoke sign-in sessions for Account entities",
+            description="For each Account entity on a Microsoft Sentinel incident, revokes all active sign-in sessions. Single-action variant of ErgoSOC-AU-Account-RevokeAndReset -- deploy this alongside azuredeploy-response-account-reset-password.json if you want session revoke and password reset as two independently runnable playbooks instead of one combined one. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+        ),
+        "azuredeploy-response-account-revoke-sessions.json", HERE,
+    )
+    write_template(
+        build_template(
+            default_playbook_name="ErgoSOC-AU-Account-ResetPassword",
+            default_revoke=False,
+            default_reset=True,
+            title="Response: reset password for Account entities",
+            description="For each Account entity on a Microsoft Sentinel incident, forces a password reset with a temporary password that is never logged or displayed. Single-action variant of ErgoSOC-AU-Account-RevokeAndReset -- deploy this alongside azuredeploy-response-account-revoke-sessions.json if you want session revoke and password reset as two independently runnable playbooks instead of one combined one. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+        ),
+        "azuredeploy-response-account-reset-password.json", HERE,
+    )

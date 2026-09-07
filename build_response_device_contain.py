@@ -263,7 +263,16 @@ def build_definition():
     }
 
 
-def build_template():
+def build_template(
+    default_playbook_name="ErgoSOC-AU-Device-IsolateAndScan",
+    template_name=None,
+    default_isolate=True,
+    default_scan=True,
+    default_restrict=False,
+    title=None,
+    description=None,
+):
+    template_name = template_name or default_playbook_name
     definition = build_definition()
     inits = {
         "Init_MachineId": {
@@ -290,8 +299,8 @@ def build_template():
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
         "contentVersion": "1.0.0.0",
         "metadata": {
-            "title": "Response: isolate device, run antivirus scan, and/or restrict app execution for Host entities",
-            "description": "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network, starts a quick antivirus scan, and/or restricts app execution to Microsoft-signed binaries only. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+            "title": title or "Response: isolate device, run antivirus scan, and/or restrict app execution for Host entities",
+            "description": description or "For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and isolates the device from the network, starts a quick antivirus scan, and/or restricts app execution to Microsoft-signed binaries only. Each action has its own on/off parameter. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
             "prerequisites": "One existing user-assigned managed identity, granted Microsoft Graph application permission ThreatHunting.Read.All AND the WindowsDefenderATP application permissions Machine.Isolate, Machine.Scan and Machine.RestrictExecution (a separate app registration from Microsoft Graph -- see README-RESPONSE.md).",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
@@ -306,17 +315,17 @@ def build_template():
             "support": {"tier": "community"},
         },
         "parameters": {
-            **base_parameters("ErgoSOC-AU-Device-IsolateAndScan"),
+            **base_parameters(default_playbook_name),
             "IsolateDevice": {
-                "type": "bool", "defaultValue": True,
+                "type": "bool", "defaultValue": default_isolate,
                 "metadata": {"description": "Fully isolate the device from the network (Defender for Endpoint machine isolate action)."},
             },
             "RunAntiVirusScan": {
-                "type": "bool", "defaultValue": True,
+                "type": "bool", "defaultValue": default_scan,
                 "metadata": {"description": "Start a quick antivirus scan on the device (Defender for Endpoint machine runAntiVirusScan action)."},
             },
             "RestrictAppExecution": {
-                "type": "bool", "defaultValue": False,
+                "type": "bool", "defaultValue": default_restrict,
                 "metadata": {"description": "Restrict the device to running only Microsoft-signed binaries (Defender for Endpoint machine restrictCodeExecution action). A milder alternative to full isolation -- defaults off since it's usually chosen instead of, not alongside, IsolateDevice."},
             },
         },
@@ -327,7 +336,7 @@ def build_template():
             sentinel_connection_resource(),
             workflow_resource(
                 definition,
-                "ErgoSOC-AU-Device-IsolateAndScan",
+                template_name,
                 extra_deploy_parameters={
                     "IsolateDevice": {"value": "[parameters('IsolateDevice')]"},
                     "RunAntiVirusScan": {"value": "[parameters('RunAntiVirusScan')]"},
@@ -342,3 +351,26 @@ def build_template():
 
 if __name__ == "__main__":
     write_template(build_template(), "azuredeploy-response-device-contain.json", HERE)
+
+    write_template(
+        build_template(
+            default_playbook_name="ErgoSOC-AU-Device-Isolate",
+            default_isolate=True,
+            default_scan=False,
+            default_restrict=False,
+            title="Response: isolate device for Host entities",
+            description="For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and fully isolates the device from the network. Single-action variant of ErgoSOC-AU-Device-IsolateAndScan -- deploy this alongside azuredeploy-response-device-scan.json if you want isolate and scan as two independently runnable playbooks instead of one combined one. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+        ),
+        "azuredeploy-response-device-isolate.json", HERE,
+    )
+    write_template(
+        build_template(
+            default_playbook_name="ErgoSOC-AU-Device-Scan",
+            default_isolate=False,
+            default_scan=True,
+            default_restrict=False,
+            title="Response: run antivirus scan for Host entities",
+            description="For each Host entity on a Microsoft Sentinel incident, resolves the Defender machine ID via Advanced Hunting and starts a quick antivirus scan. Single-action variant of ErgoSOC-AU-Device-IsolateAndScan -- deploy this alongside azuredeploy-response-device-isolate.json if you want isolate and scan as two independently runnable playbooks instead of one combined one. Not wired to an automation rule -- an analyst manually running the playbook from the incident is the approval gate.",
+        ),
+        "azuredeploy-response-device-scan.json", HERE,
+    )
