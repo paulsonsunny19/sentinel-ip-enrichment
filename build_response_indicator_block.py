@@ -182,8 +182,8 @@ def build_ip_section():
                 **comment_actions(
                     "IP", HEADER_IP + IP_ROW, "Set_IpBlockResult",
                     teams_message_parts=[
-                        "' | IP: '", "items('For_each_IP_entity')?['Address']",
-                        "' | Block: '", "variables('IpBlockResult')",
+                        ("IP", "items('For_each_IP_entity')?['Address']"),
+                        ("Block", "variables('IpBlockResult')"),
                     ],
                 ),
             },
@@ -235,8 +235,8 @@ def build_url_section():
                 **comment_actions(
                     "URL", HEADER_URL + URL_ROW, "Set_UrlBlockResult",
                     teams_message_parts=[
-                        "' | URL: '", "outputs('Compose_Clean_Url')",
-                        "' | Block: '", "variables('UrlBlockResult')",
+                        ("URL", "outputs('Compose_Clean_Url')"),
+                        ("Block", "variables('UrlBlockResult')"),
                     ],
                 ),
             },
@@ -255,6 +255,7 @@ def build_definition():
             "Action": {"type": "String", "defaultValue": "Block"},
             "IndicatorExpirationDays": {"type": "Int", "defaultValue": 180},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -351,6 +352,7 @@ def build_template():
                     "Action": {"value": "[parameters('Action')]"},
                     "IndicatorExpirationDays": {"value": "[parameters('IndicatorExpirationDays')]"},
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

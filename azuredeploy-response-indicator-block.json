@@ -46,7 +46,14 @@
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
+        "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Send webhook alerts to a channel\". When set, this playbook also posts a short notification card (client, ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
+      }
+    },
+    "ClientOrganizationName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional. Shown at the top of the Teams notification card (only relevant if TeamsWebhookUrl is set) -- e.g. the client/tenant name, useful if one Teams channel receives alerts from more than one deployment. Leave blank to omit it from the card."
       }
     },
     "BlockIP": {
@@ -154,6 +161,10 @@
             },
             "TeamsWebhookUrl": {
               "type": "SecureString",
+              "defaultValue": ""
+            },
+            "ClientOrganizationName": {
+              "type": "String",
               "defaultValue": ""
             }
           },
@@ -377,9 +388,52 @@
                               "version": "1.4",
                               "body": [
                                 {
-                                  "type": "TextBlock",
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}",
-                                  "wrap": true
+                                  "type": "Container",
+                                  "style": "@{if(equals(coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown'), 'High'), 'attention', if(equals(coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown'), 'Medium'), 'warning', if(equals(coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown'), 'Low'), 'good', 'default')))}",
+                                  "items": [
+                                    {
+                                      "type": "TextBlock",
+                                      "text": "\ud83d\udee1\ufe0f ErgoSOC-AU response playbook run",
+                                      "weight": "Bolder",
+                                      "size": "Medium",
+                                      "wrap": true
+                                    },
+                                    {
+                                      "type": "TextBlock",
+                                      "text": "@{if(equals(parameters('ClientOrganizationName'), ''), 'Client: (not set)', concat('Client: ', parameters('ClientOrganizationName')))}",
+                                      "isSubtle": true,
+                                      "wrap": true
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "FactSet",
+                                  "facts": [
+                                    {
+                                      "title": "Ticket",
+                                      "value": "@{concat('Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
+                                    },
+                                    {
+                                      "title": "Severity",
+                                      "value": "@{coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown')}"
+                                    },
+                                    {
+                                      "title": "Playbook",
+                                      "value": "@{workflow().name}"
+                                    },
+                                    {
+                                      "title": "Incident owner (best-effort)",
+                                      "value": "@{coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned')}"
+                                    },
+                                    {
+                                      "title": "IP",
+                                      "value": "@{items('For_each_IP_entity')?['Address']}"
+                                    },
+                                    {
+                                      "title": "Block",
+                                      "value": "@{variables('IpBlockResult')}"
+                                    }
+                                  ]
                                 }
                               ]
                             }
@@ -586,9 +640,52 @@
                               "version": "1.4",
                               "body": [
                                 {
-                                  "type": "TextBlock",
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}",
-                                  "wrap": true
+                                  "type": "Container",
+                                  "style": "@{if(equals(coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown'), 'High'), 'attention', if(equals(coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown'), 'Medium'), 'warning', if(equals(coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown'), 'Low'), 'good', 'default')))}",
+                                  "items": [
+                                    {
+                                      "type": "TextBlock",
+                                      "text": "\ud83d\udee1\ufe0f ErgoSOC-AU response playbook run",
+                                      "weight": "Bolder",
+                                      "size": "Medium",
+                                      "wrap": true
+                                    },
+                                    {
+                                      "type": "TextBlock",
+                                      "text": "@{if(equals(parameters('ClientOrganizationName'), ''), 'Client: (not set)', concat('Client: ', parameters('ClientOrganizationName')))}",
+                                      "isSubtle": true,
+                                      "wrap": true
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "FactSet",
+                                  "facts": [
+                                    {
+                                      "title": "Ticket",
+                                      "value": "@{concat('Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
+                                    },
+                                    {
+                                      "title": "Severity",
+                                      "value": "@{coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown')}"
+                                    },
+                                    {
+                                      "title": "Playbook",
+                                      "value": "@{workflow().name}"
+                                    },
+                                    {
+                                      "title": "Incident owner (best-effort)",
+                                      "value": "@{coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned')}"
+                                    },
+                                    {
+                                      "title": "URL",
+                                      "value": "@{outputs('Compose_Clean_Url')}"
+                                    },
+                                    {
+                                      "title": "Block",
+                                      "value": "@{variables('UrlBlockResult')}"
+                                    }
+                                  ]
                                 }
                               ]
                             }
@@ -646,6 +743,9 @@
           },
           "TeamsWebhookUrl": {
             "value": "[parameters('TeamsWebhookUrl')]"
+          },
+          "ClientOrganizationName": {
+            "value": "[parameters('ClientOrganizationName')]"
           }
         }
       }

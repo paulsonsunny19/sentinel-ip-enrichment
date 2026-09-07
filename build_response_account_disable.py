@@ -61,6 +61,7 @@ def build_definition():
             "DisableAccount": {"type": "Bool", "defaultValue": True},
             "ConfirmCompromised": {"type": "Bool", "defaultValue": True},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -242,9 +243,9 @@ def build_definition():
                     **teams_notify_actions(
                         "Add_comment_to_incident_V3",
                         [
-                            "' | Account: '", "outputs('Compose_User_Ref')",
-                            "' | Disable account: '", "variables('DisableResult')",
-                            "' | Confirm compromised: '", "variables('ConfirmResult')",
+                            ("Account", "outputs('Compose_User_Ref')"),
+                            ("Disable account", "variables('DisableResult')"),
+                            ("Confirm compromised", "variables('ConfirmResult')"),
                         ],
                     ),
                 },
@@ -314,6 +315,7 @@ def build_template():
                     "DisableAccount": {"value": "[parameters('DisableAccount')]"},
                     "ConfirmCompromised": {"value": "[parameters('ConfirmCompromised')]"},
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

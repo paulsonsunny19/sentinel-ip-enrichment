@@ -141,6 +141,7 @@ def build_definition():
             "ExoManagedIdentityClientId": {"type": "String", "defaultValue": ""},
             "ExoOrganization": {"type": "String", "defaultValue": ""},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -338,9 +339,9 @@ def build_definition():
                     **teams_notify_actions(
                         "Add_comment_to_incident_V3",
                         [
-                            "' | Sender: '", "outputs('Compose_Sender')",
-                            "' | Domain block: '", "variables('DomainJobResult')",
-                            "' | Address block: '", "variables('AddressJobResult')",
+                            ("Sender", "outputs('Compose_Sender')"),
+                            ("Domain block", "variables('DomainJobResult')"),
+                            ("Address block", "variables('AddressJobResult')"),
                         ],
                     ),
                 },
@@ -430,6 +431,7 @@ def build_template():
                     "ExoManagedIdentityClientId": {"value": "[parameters('ExoManagedIdentityClientId')]"},
                     "ExoOrganization": {"value": "[parameters('ExoOrganization')]"},
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

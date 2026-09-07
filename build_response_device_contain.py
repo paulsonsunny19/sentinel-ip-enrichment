@@ -96,6 +96,7 @@ def build_definition():
             "RunAntiVirusScan": {"type": "Bool", "defaultValue": True},
             "RestrictAppExecution": {"type": "Bool", "defaultValue": False},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -266,10 +267,10 @@ def build_definition():
                     **teams_notify_actions(
                         "Add_comment_to_incident_V3",
                         [
-                            "' | Host: '", KQL_HOST_RAW,
-                            "' | Isolate: '", "variables('IsolateResult')",
-                            "' | Scan: '", "variables('ScanResult')",
-                            "' | Restrict: '", "variables('RestrictResult')",
+                            ("Host", KQL_HOST_RAW),
+                            ("Isolate", "variables('IsolateResult')"),
+                            ("Scan", "variables('ScanResult')"),
+                            ("Restrict", "variables('RestrictResult')"),
                         ],
                     ),
                 },
@@ -358,6 +359,7 @@ def build_template(
                     "RunAntiVirusScan": {"value": "[parameters('RunAntiVirusScan')]"},
                     "RestrictAppExecution": {"value": "[parameters('RestrictAppExecution')]"},
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

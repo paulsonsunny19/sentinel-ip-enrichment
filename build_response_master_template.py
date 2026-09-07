@@ -71,6 +71,7 @@ SELECTED_SEVEN_PLAYBOOKS = [
 SHARED_PARAM_MAP = {
     "UserAssignedManagedIdentityResourceId": "UserAssignedManagedIdentityResourceId",
     "TeamsWebhookUrl": "TeamsWebhookUrl",
+    "ClientOrganizationName": "ClientOrganizationName",
 }
 
 # Parameter names that appear in more than one playbook and are deliberately
@@ -108,6 +109,10 @@ def build(playbooks, output_filename, title, description, entities, tags, playbo
         "TeamsWebhookUrl": {
             "type": "securestring", "defaultValue": "",
             "metadata": {"description": f"Optional. A Microsoft Teams channel's webhook URL, shared by all {playbook_count_word} Logic Apps -- see each playbook's own TeamsWebhookUrl parameter description. Leave blank (the default) to skip Teams notifications entirely."},
+        },
+        "ClientOrganizationName": {
+            "type": "string", "defaultValue": "",
+            "metadata": {"description": f"Optional. Shown at the top of the Teams notification card, shared by all {playbook_count_word} Logic Apps (only relevant if TeamsWebhookUrl is set)."},
         },
     }
     resources = []

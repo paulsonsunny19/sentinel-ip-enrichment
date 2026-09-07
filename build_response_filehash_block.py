@@ -75,6 +75,7 @@ def build_definition():
             "Action": {"type": "String", "defaultValue": "Block"},
             "IndicatorExpirationDays": {"type": "Int", "defaultValue": 180},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -200,8 +201,8 @@ def build_definition():
                     **teams_notify_actions(
                         "Add_comment_to_incident_V3",
                         [
-                            "' | Hash: '", "outputs('Compose_Clean_Hash')",
-                            "' | Block: '", "variables('BlockResult')",
+                            ("Hash", "outputs('Compose_Clean_Hash')"),
+                            ("Block", "variables('BlockResult')"),
                         ],
                     ),
                 },
@@ -264,6 +265,7 @@ def build_template():
                     "Action": {"value": "[parameters('Action')]"},
                     "IndicatorExpirationDays": {"value": "[parameters('IndicatorExpirationDays')]"},
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

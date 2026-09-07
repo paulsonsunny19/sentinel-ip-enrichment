@@ -70,6 +70,7 @@ def build_definition():
         "parameters": {
             "$connections": {"defaultValue": {}, "type": "Object"},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -265,8 +266,8 @@ def build_definition():
                     **teams_notify_actions(
                         "Add_comment_to_incident_V3",
                         [
-                            "' | Account: '", "outputs('Compose_User_Ref')",
-                            "' | OAuth grants: '", "variables('GrantsSummary')",
+                            ("Account", "outputs('Compose_User_Ref')"),
+                            ("OAuth grants", "variables('GrantsSummary')"),
                         ],
                     ),
                 },
@@ -328,6 +329,7 @@ def build_template():
                 "ErgoSOC-AU-Account-RevokeAppConsent",
                 extra_deploy_parameters={
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

@@ -83,14 +83,19 @@ a new permission grant with its own consent/propagation story, or Resource-Speci
 per-team — a heavier trust escalation than "one plain webhook URL, one deployment parameter" for
 what's meant to be a convenience notification, not a system of record.
 
-**What the message contains, and one honest limitation:** ticket (Sentinel incident number),
-playbook name, and a summary of what was done (varies per playbook — e.g. "Revoke sessions: OK |
-Reset password: disabled by deployment setting"). It also includes the incident's **assigned
-owner** as a best-effort stand-in for "who ran this" — Sentinel's manual "Run playbook" trigger
-does not pass the initiating analyst's identity into the trigger payload, so the owner (who may or
-may not be the same person who clicked Run) is the closest field actually available inside the
-workflow. For a definitive record of who ran a playbook, check the Logic App's own **Run History**
-in the Azure Portal, or the Azure Activity Log — not this notification.
+**What the card looks like:** a header showing the client/organization name (from
+`ClientOrganizationName`, optional — set once per deployment, useful if one Teams channel receives
+alerts from more than one client), colored by the incident's severity (red for High, amber for
+Medium, green for Low). Below that, a table of facts: Ticket (incident number), Severity, Playbook,
+Incident owner, and then whatever that specific playbook did — e.g. `Revoke sessions: OK` /
+`Reset password: disabled by deployment setting` as their own rows, not one squashed-together line.
+
+**One honest limitation — "Incident owner" is a best-effort stand-in for "who ran this,"** not a
+guarantee. Sentinel's manual "Run playbook" trigger does not pass the initiating analyst's identity
+into the trigger payload, so the incident's assigned owner (who may or may not be the same person
+who clicked Run) is the closest field actually available inside the workflow. For a definitive
+record of who ran a playbook, check the Logic App's own **Run History** in the Azure Portal, or the
+Azure Activity Log — not this notification.
 
 **Delivery is fire-and-forget:** if the Teams webhook call fails (wrong URL, channel/Workflow
 deleted, etc.), that failure is not retried and not reported back into the Sentinel incident

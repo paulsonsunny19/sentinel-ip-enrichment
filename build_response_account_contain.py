@@ -70,6 +70,7 @@ def build_definition():
             "RevokeSessions": {"type": "Bool", "defaultValue": True},
             "ResetPassword": {"type": "Bool", "defaultValue": True},
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
+            "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -266,9 +267,9 @@ def build_definition():
                     **teams_notify_actions(
                         "Add_comment_to_incident_V3",
                         [
-                            "' | Account: '", "outputs('Compose_User_Ref')",
-                            "' | Revoke sessions: '", "variables('RevokeResult')",
-                            "' | Reset password: '", "variables('ResetResult')",
+                            ("Account", "outputs('Compose_User_Ref')"),
+                            ("Revoke sessions", "variables('RevokeResult')"),
+                            ("Reset password", "variables('ResetResult')"),
                         ],
                     ),
                 },
@@ -351,6 +352,7 @@ def build_template(
                     "RevokeSessions": {"value": "[parameters('RevokeSessions')]"},
                     "ResetPassword": {"value": "[parameters('ResetPassword')]"},
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                    "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
                 },
             ),
         ],

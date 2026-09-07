@@ -120,7 +120,11 @@ def base_parameters(default_playbook_name, extra=None):
         },
         "TeamsWebhookUrl": {
             "type": "securestring", "defaultValue": "",
-            "metadata": {"description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."},
+            "metadata": {"description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Send webhook alerts to a channel\". When set, this playbook also posts a short notification card (client, ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."},
+        },
+        "ClientOrganizationName": {
+            "type": "string", "defaultValue": "",
+            "metadata": {"description": "Optional. Shown at the top of the Teams notification card (only relevant if TeamsWebhookUrl is set) -- e.g. the client/tenant name, useful if one Teams channel receives alerts from more than one deployment. Leave blank to omit it from the card."},
         },
     }
     if extra:
@@ -128,12 +132,36 @@ def base_parameters(default_playbook_name, extra=None):
     return params
 
 
-def teams_message_expr(*extra_parts):
-    """The WDL expression (with its '@{'/'}' wrapper) for the Teams
-    notification message body. extra_parts are raw WDL expression
-    fragments (no leading @, each a valid concat() argument) describing
-    what this specific playbook did -- appended after the shared
-    ticket/playbook/owner prefix every playbook's notification shares.
+def _teams_fact(title, value_expr):
+    return {"title": title, "value": f"@{{{value_expr}}}"}
+
+
+def teams_notify_actions(run_after_name, extra_facts, suffix=""):
+    """Optional, fire-and-forget Teams channel notification, gated on the
+    TeamsWebhookUrl parameter being set (empty by default -- opt-in per
+    deployment, same pattern as the email playbook's AutoExecuteBlock).
+    No authentication on the HTTP call itself: the webhook URL is the
+    credential. A delivery failure here is not reported back to the
+    Sentinel incident comment (which stays the authoritative record) and
+    is not retried.
+
+    extra_facts: list of (title, value_expr) tuples -- value_expr a raw
+    WDL expression fragment (no leading @) -- rendered as additional rows
+    in the card's FactSet, after the shared Client/Ticket/Severity/
+    Playbook/Incident owner facts every playbook's notification includes.
+
+    The body is a minimal Adaptive Card (a header Container plus a
+    FactSet), not a plain {"text": ...} object -- Teams' current "Send
+    webhook alerts to a channel" Workflow template (the replacement for
+    the retired classic Incoming Webhook connector) posts via a "Post
+    card in a chat or channel" action, which deserializes the webhook
+    payload itself as an Adaptive Card and fails with "Property 'type'
+    must be 'AdaptiveCard'" on anything else -- confirmed against a real
+    run. Each fact's own "value" is independently a WDL string
+    interpolation ("@{...}"), same as every other per-field value
+    elsewhere in this repo's HTTP bodies, rather than one giant concat()
+    -- simpler to read in the generated JSON, and lets Teams render each
+    fact as its own label/value row instead of one long delimited line.
 
     "Incident owner" is a best-effort stand-in for "who ran this":
     Sentinel's manual "Run playbook" trigger does not pass the initiating
@@ -149,40 +177,24 @@ def teams_message_expr(*extra_parts):
     runtime with "workflow parameter 'PlaybookName' is not found."
     workflow().name is the Logic App's own resource name, which is always
     exactly what PlaybookName was at deploy time.
-    """
-    base = [
-        "'ErgoSOC-AU response playbook run | Ticket: Incident #'",
-        "string(triggerBody()?['object']?['properties']?['incidentNumber'])",
-        "' | Playbook: '", "workflow().name",
-        "' | Incident owner (best-effort, not necessarily who ran this): '",
-        "coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], "
-        "triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned')",
-    ]
-    return "@{concat(" + ", ".join(base + list(extra_parts)) + ")}"
-
-
-def teams_notify_actions(run_after_name, message_parts, suffix=""):
-    """Optional, fire-and-forget Teams channel notification, gated on the
-    TeamsWebhookUrl parameter being set (empty by default -- opt-in per
-    deployment, same pattern as the email playbook's AutoExecuteBlock).
-    No authentication on the HTTP call itself: the webhook URL is the
-    credential. A delivery failure here is not reported back to the
-    Sentinel incident comment (which stays the authoritative record) and
-    is not retried.
-
-    The body is a minimal Adaptive Card, not a plain {"text": ...} object
-    -- Teams' current "Send webhook alerts to a channel" Workflow template
-    (the replacement for the retired classic Incoming Webhook connector)
-    uses a "Post card in a chat or channel" action that deserializes the
-    webhook payload itself as an Adaptive Card and fails with
-    "Property 'type' must be 'AdaptiveCard'" on anything else -- confirmed
-    against a real run.
 
     suffix keeps action names unique when a workflow has more than one
     call site for this (e.g. the IP/URL indicator-block playbook's two
     loops)."""
     condition_name = f"Condition_TeamsNotify{suffix}"
     http_name = f"HTTP_TeamsNotify{suffix}"
+    severity_expr = "coalesce(triggerBody()?['object']?['properties']?['severity'], 'Unknown')"
+    base_facts = [
+        _teams_fact("Ticket", "concat('Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))"),
+        _teams_fact("Severity", severity_expr),
+        _teams_fact("Playbook", "workflow().name"),
+        _teams_fact(
+            "Incident owner (best-effort)",
+            "coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], "
+            "triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned')",
+        ),
+    ]
+    all_facts = base_facts + [_teams_fact(title, expr) for title, expr in extra_facts]
     return {
         condition_name: {
             "runAfter": after(run_after_name), "type": "If",
@@ -197,9 +209,31 @@ def teams_notify_actions(run_after_name, message_parts, suffix=""):
                         "version": "1.4",
                         "body": [
                             {
-                                "type": "TextBlock",
-                                "text": teams_message_expr(*message_parts),
-                                "wrap": True,
+                                "type": "Container",
+                                "style": (
+                                    f"@{{if(equals({severity_expr}, 'High'), 'attention', "
+                                    f"if(equals({severity_expr}, 'Medium'), 'warning', "
+                                    f"if(equals({severity_expr}, 'Low'), 'good', 'default')))}}"
+                                ),
+                                "items": [
+                                    {
+                                        "type": "TextBlock",
+                                        "text": "🛡️ ErgoSOC-AU response playbook run",
+                                        "weight": "Bolder",
+                                        "size": "Medium",
+                                        "wrap": True,
+                                    },
+                                    {
+                                        "type": "TextBlock",
+                                        "text": "@{if(equals(parameters('ClientOrganizationName'), ''), 'Client: (not set)', concat('Client: ', parameters('ClientOrganizationName')))}",
+                                        "isSubtle": True,
+                                        "wrap": True,
+                                    },
+                                ],
+                            },
+                            {
+                                "type": "FactSet",
+                                "facts": all_facts,
                             },
                         ],
                     },
