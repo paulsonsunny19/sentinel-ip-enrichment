@@ -41,6 +41,39 @@ legitimate choice — just make it deliberately, by attaching that one playbook 
 automation rule (see the main [`README.md`](README.md#automation-rules--one-per-entity-type) for
 the pattern). Don't do it by default.
 
+### A second approval step for Password Reset and Device Isolate ("Option C")
+
+These two specific actions — forcing a password reset, and fully isolating a device — get a
+*second*, independent approval step on top of "an analyst ran the playbook," since they're the two
+most immediately disruptive to the end user (one locks them out, the other cuts them off the
+network entirely). Deliberately built as a **Sentinel incident task**, not a Teams approval card,
+even though this repo now has a working Teams integration (see below) — staying on the same
+`ManagedServiceIdentity`/ARM auth every other write call in this repo uses, rather than a delegated
+Teams/Outlook connection bound to a real person's or service account's identity.
+
+**How it works:** when the playbook reaches the Password Reset or Device Isolate step, it creates a
+task on the incident (visible in the Sentinel Portal, incident → **Tasks** tab) and then polls —
+waiting up to 30 minutes, checking every 30 seconds — for an analyst to mark that task
+**Completed**. If it's marked Completed within the window, the actual write proceeds as normal. If
+it isn't (declined by inaction, or nobody available in time), the playbook skips the action and
+reports `not approved within timeout (task status: New)` in both the incident comment and the Teams
+notification, same as any other skipped/disabled action.
+
+This is genuinely a two-person control if you want it to be: whoever runs the playbook and whoever
+marks the task Completed can be different analysts. Nothing in this repo enforces that they must be
+different people — that's a process decision for your team, not something encoded here.
+
+**Uses the Sentinel Incident Tasks REST API** (`PUT`/`GET` against `{incident's own ARM resource
+ID}/tasks/{taskId}?api-version=2024-03-01`), a Preview surface. `Microsoft Sentinel Responder` —
+already required by every playbook in this repo — is sufficient RBAC; no extra permission grant
+needed. Built from this session's own research into that API; its documentation wasn't reachable
+to independently re-verify live while writing this, so — same as every other REST integration in
+this repo — the exact request/response shape should be confirmed against a real incident on first
+use, and any mismatch reported so it can be corrected.
+
+**Not currently configurable per deployment** (30-minute timeout, 30-second poll interval are
+fixed in the generated template) — ask if you want these exposed as deployment parameters.
+
 ## Every action reports success or failure — nothing is assumed to have worked
 
 Each write call is checked against its expected success status code(s). The incident comment

@@ -36,6 +36,7 @@ from response_common import (
     TD,
     TH,
     after,
+    approval_gate_actions,
     base_outputs,
     base_parameters,
     http_call,
@@ -176,19 +177,50 @@ def build_definition():
                                 "runAfter": {}, "type": "If",
                                 "expression": {"equals": ["@parameters('IsolateDevice')", True]},
                                 "actions": {
-                                    "HTTP_IsolateDevice": http_call(
-                                        "@{concat('https://api.securitycenter.microsoft.com/api/machines/', "
-                                        "variables('MachineId'), '/isolate')}",
-                                        method="POST", auth=MDE_AUTH,
-                                        body={
-                                            "Comment": "Isolated by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
-                                            "IsolationType": "Full",
-                                        },
+                                    **approval_gate_actions(
+                                        "Isolate",
+                                        "concat('Approve device isolation -- Incident #', "
+                                        "string(triggerBody()?['object']?['properties']?['incidentNumber']), "
+                                        "': ', variables('MachineId'))",
+                                        "ErgoSOC-AU response playbook is requesting approval to fully "
+                                        "isolate this device from the network. Mark this task Completed "
+                                        "(Sentinel Portal -> this incident -> Tasks tab) to approve. If it "
+                                        "isn't marked Completed within the timeout, the playbook proceeds "
+                                        "without isolating the device.",
                                     ),
-                                    "Set_IsolateResult": {
-                                        "runAfter": after("HTTP_IsolateDevice", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
-                                        "type": "SetVariable",
-                                        "inputs": {"name": "IsolateResult", "value": result_expr("HTTP_IsolateDevice", [200, 201])},
+                                    "Condition_IsolateDevice_Approved": {
+                                        "runAfter": after("Until_IsolateApproval"), "type": "If",
+                                        "expression": {"equals": ["@variables('IsolateApprovalStatus')", "Completed"]},
+                                        "actions": {
+                                            "HTTP_IsolateDevice": {
+                                                **http_call(
+                                                    "@{concat('https://api.securitycenter.microsoft.com/api/machines/', "
+                                                    "variables('MachineId'), '/isolate')}",
+                                                    method="POST", auth=MDE_AUTH,
+                                                    body={
+                                                        "Comment": "Isolated by ErgoSOC-AU response playbook (manual analyst run, approved via Sentinel incident task) via Microsoft Sentinel incident.",
+                                                        "IsolationType": "Full",
+                                                    },
+                                                ),
+                                                "runAfter": {},
+                                            },
+                                            "Set_IsolateResult": {
+                                                "runAfter": after("HTTP_IsolateDevice", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                                                "type": "SetVariable",
+                                                "inputs": {"name": "IsolateResult", "value": result_expr("HTTP_IsolateDevice", [200, 201])},
+                                            },
+                                        },
+                                        "else": {
+                                            "actions": {
+                                                "Set_IsolateResult_NotApproved": {
+                                                    "runAfter": {}, "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "IsolateResult",
+                                                        "value": "@concat('not approved within timeout (task status: ', variables('IsolateApprovalStatus'), ')')",
+                                                    },
+                                                },
+                                            },
+                                        },
                                     },
                                 },
                                 "else": {"actions": {}},
@@ -308,9 +340,13 @@ def build_template(
             "runAfter": after("Init_ScanResult"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "RestrictResult", "type": "string", "value": "disabled by deployment setting"}]},
         },
+        "Init_IsolateApprovalStatus": {
+            "runAfter": after("Init_RestrictResult"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "IsolateApprovalStatus", "type": "string", "value": "New"}]},
+        },
     }
     definition["actions"] = {**inits, **definition["actions"]}
-    definition["actions"]["Entities_-_Get_Hosts"]["runAfter"] = after("Init_RestrictResult")
+    definition["actions"]["Entities_-_Get_Hosts"]["runAfter"] = after("Init_IsolateApprovalStatus")
 
     template = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",

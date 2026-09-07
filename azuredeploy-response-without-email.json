@@ -393,9 +393,26 @@
                         ]
                       }
                     },
-                    "Entities_-_Get_Accounts": {
+                    "Init_ResetPasswordApprovalStatus": {
                       "runAfter": {
                         "Init_ResolvedObjectId": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "InitializeVariable",
+                      "inputs": {
+                        "variables": [
+                          {
+                            "name": "ResetPasswordApprovalStatus",
+                            "type": "string",
+                            "value": "New"
+                          }
+                        ]
+                      }
+                    },
+                    "Entities_-_Get_Accounts": {
+                      "runAfter": {
+                        "Init_ResetPasswordApprovalStatus": [
                           "Succeeded"
                         ]
                       },
@@ -657,21 +674,21 @@
                                 ]
                               },
                               "actions": {
-                                "Compose_TempPassword": {
+                                "Compose_ResetPasswordTaskId": {
                                   "runAfter": {},
                                   "type": "Compose",
-                                  "inputs": "@concat(toUpper(substring(guid(), 0, 6)), '#', toLower(substring(guid(), 0, 6)), string(rand(10, 99)))"
+                                  "inputs": "@guid()"
                                 },
-                                "HTTP_ResetPassword": {
+                                "HTTP_ResetPasswordCreateTask": {
                                   "runAfter": {
-                                    "Compose_TempPassword": [
+                                    "Compose_ResetPasswordTaskId": [
                                       "Succeeded"
                                     ]
                                   },
                                   "type": "Http",
                                   "inputs": {
-                                    "method": "PATCH",
-                                    "uri": "@{concat('https://graph.microsoft.com/v1.0/users/', uriComponent(outputs('Compose_Effective_Object_Id')))}",
+                                    "method": "PUT",
+                                    "uri": "@{concat(triggerBody()?['object']?['id'], '/tasks/', outputs('Compose_ResetPasswordTaskId'), '?api-version=2024-03-01')}",
                                     "headers": {
                                       "Accept": "application/json",
                                       "Content-Type": "application/json"
@@ -679,12 +696,13 @@
                                     "authentication": {
                                       "type": "ManagedServiceIdentity",
                                       "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                                      "audience": "https://graph.microsoft.com"
+                                      "audience": "https://management.azure.com/"
                                     },
                                     "body": {
-                                      "passwordProfile": {
-                                        "forceChangePasswordNextSignIn": true,
-                                        "password": "@{outputs('Compose_TempPassword')}"
+                                      "properties": {
+                                        "title": "@{concat('Approve password reset -- Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ': ', outputs('Compose_User_Ref'))}",
+                                        "description": "ErgoSOC-AU response playbook is requesting approval to force a password reset for this account. Mark this task Completed (Sentinel Portal -> this incident -> Tasks tab) to approve. If it isn't marked Completed within the timeout, the playbook proceeds without resetting the password.",
+                                        "status": "New"
                                       }
                                     }
                                   },
@@ -696,19 +714,157 @@
                                     }
                                   }
                                 },
-                                "Set_ResetResult": {
+                                "Until_ResetPasswordApproval": {
+                                  "type": "Until",
+                                  "expression": "@equals(variables('ResetPasswordApprovalStatus'), 'Completed')",
+                                  "limit": {
+                                    "count": 60,
+                                    "timeout": "PT30M"
+                                  },
+                                  "actions": {
+                                    "Delay_ResetPasswordApproval": {
+                                      "type": "Wait",
+                                      "runAfter": {},
+                                      "inputs": {
+                                        "interval": {
+                                          "count": 30,
+                                          "unit": "Second"
+                                        }
+                                      }
+                                    },
+                                    "HTTP_ResetPasswordCheckTask": {
+                                      "runAfter": {
+                                        "Delay_ResetPasswordApproval": [
+                                          "Succeeded"
+                                        ]
+                                      },
+                                      "type": "Http",
+                                      "inputs": {
+                                        "method": "GET",
+                                        "uri": "@{concat(triggerBody()?['object']?['id'], '/tasks/', outputs('Compose_ResetPasswordTaskId'), '?api-version=2024-03-01')}",
+                                        "headers": {
+                                          "Accept": "application/json",
+                                          "Content-Type": "application/json"
+                                        },
+                                        "authentication": {
+                                          "type": "ManagedServiceIdentity",
+                                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                                          "audience": "https://management.azure.com/"
+                                        }
+                                      },
+                                      "runtimeConfiguration": {
+                                        "secureData": {
+                                          "properties": [
+                                            "inputs"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "Set_ResetPasswordApprovalStatus": {
+                                      "runAfter": {
+                                        "HTTP_ResetPasswordCheckTask": [
+                                          "Succeeded",
+                                          "Failed",
+                                          "Skipped",
+                                          "TimedOut"
+                                        ]
+                                      },
+                                      "type": "SetVariable",
+                                      "inputs": {
+                                        "name": "ResetPasswordApprovalStatus",
+                                        "value": "@if(equals(outputs('HTTP_ResetPasswordCheckTask')?['statusCode'], 200), coalesce(outputs('HTTP_ResetPasswordCheckTask')?['body']?['properties']?['status'], variables('ResetPasswordApprovalStatus')), variables('ResetPasswordApprovalStatus'))"
+                                      }
+                                    }
+                                  },
                                   "runAfter": {
-                                    "HTTP_ResetPassword": [
+                                    "HTTP_ResetPasswordCreateTask": [
                                       "Succeeded",
                                       "Failed",
                                       "Skipped",
                                       "TimedOut"
                                     ]
+                                  }
+                                },
+                                "Condition_ResetPassword_Approved": {
+                                  "runAfter": {
+                                    "Until_ResetPasswordApproval": [
+                                      "Succeeded"
+                                    ]
                                   },
-                                  "type": "SetVariable",
-                                  "inputs": {
-                                    "name": "ResetResult",
-                                    "value": "@if(or(equals(outputs('HTTP_ResetPassword')?['statusCode'], 204)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_ResetPassword')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_ResetPassword')?['body']?['error']?['message'], string(outputs('HTTP_ResetPassword')?['body']), 'no error detail returned'))))"
+                                  "type": "If",
+                                  "expression": {
+                                    "equals": [
+                                      "@variables('ResetPasswordApprovalStatus')",
+                                      "Completed"
+                                    ]
+                                  },
+                                  "actions": {
+                                    "Compose_TempPassword": {
+                                      "runAfter": {},
+                                      "type": "Compose",
+                                      "inputs": "@concat(toUpper(substring(guid(), 0, 6)), '#', toLower(substring(guid(), 0, 6)), string(rand(10, 99)))"
+                                    },
+                                    "HTTP_ResetPassword": {
+                                      "runAfter": {
+                                        "Compose_TempPassword": [
+                                          "Succeeded"
+                                        ]
+                                      },
+                                      "type": "Http",
+                                      "inputs": {
+                                        "method": "PATCH",
+                                        "uri": "@{concat('https://graph.microsoft.com/v1.0/users/', uriComponent(outputs('Compose_Effective_Object_Id')))}",
+                                        "headers": {
+                                          "Accept": "application/json",
+                                          "Content-Type": "application/json"
+                                        },
+                                        "authentication": {
+                                          "type": "ManagedServiceIdentity",
+                                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                                          "audience": "https://graph.microsoft.com"
+                                        },
+                                        "body": {
+                                          "passwordProfile": {
+                                            "forceChangePasswordNextSignIn": true,
+                                            "password": "@{outputs('Compose_TempPassword')}"
+                                          }
+                                        }
+                                      },
+                                      "runtimeConfiguration": {
+                                        "secureData": {
+                                          "properties": [
+                                            "inputs"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "Set_ResetResult": {
+                                      "runAfter": {
+                                        "HTTP_ResetPassword": [
+                                          "Succeeded",
+                                          "Failed",
+                                          "Skipped",
+                                          "TimedOut"
+                                        ]
+                                      },
+                                      "type": "SetVariable",
+                                      "inputs": {
+                                        "name": "ResetResult",
+                                        "value": "@if(or(equals(outputs('HTTP_ResetPassword')?['statusCode'], 204)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_ResetPassword')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_ResetPassword')?['body']?['error']?['message'], string(outputs('HTTP_ResetPassword')?['body']), 'no error detail returned'))))"
+                                      }
+                                    }
+                                  },
+                                  "else": {
+                                    "actions": {
+                                      "Set_ResetResult_NotApproved": {
+                                        "runAfter": {},
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                          "name": "ResetResult",
+                                          "value": "@concat('not approved within timeout (task status: ', variables('ResetPasswordApprovalStatus'), ')')"
+                                        }
+                                      }
+                                    }
                                   }
                                 }
                               },
@@ -2647,9 +2803,26 @@
                         ]
                       }
                     },
-                    "Entities_-_Get_Hosts": {
+                    "Init_IsolateApprovalStatus": {
                       "runAfter": {
                         "Init_RestrictResult": [
+                          "Succeeded"
+                        ]
+                      },
+                      "type": "InitializeVariable",
+                      "inputs": {
+                        "variables": [
+                          {
+                            "name": "IsolateApprovalStatus",
+                            "type": "string",
+                            "value": "New"
+                          }
+                        ]
+                      }
+                    },
+                    "Entities_-_Get_Hosts": {
+                      "runAfter": {
+                        "Init_IsolateApprovalStatus": [
                           "Succeeded"
                         ]
                       },
@@ -2796,12 +2969,21 @@
                                 ]
                               },
                               "actions": {
-                                "HTTP_IsolateDevice": {
+                                "Compose_IsolateTaskId": {
                                   "runAfter": {},
+                                  "type": "Compose",
+                                  "inputs": "@guid()"
+                                },
+                                "HTTP_IsolateCreateTask": {
+                                  "runAfter": {
+                                    "Compose_IsolateTaskId": [
+                                      "Succeeded"
+                                    ]
+                                  },
                                   "type": "Http",
                                   "inputs": {
-                                    "method": "POST",
-                                    "uri": "@{concat('https://api.securitycenter.microsoft.com/api/machines/', variables('MachineId'), '/isolate')}",
+                                    "method": "PUT",
+                                    "uri": "@{concat(triggerBody()?['object']?['id'], '/tasks/', outputs('Compose_IsolateTaskId'), '?api-version=2024-03-01')}",
                                     "headers": {
                                       "Accept": "application/json",
                                       "Content-Type": "application/json"
@@ -2809,11 +2991,14 @@
                                     "authentication": {
                                       "type": "ManagedServiceIdentity",
                                       "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
-                                      "audience": "https://api.securitycenter.microsoft.com"
+                                      "audience": "https://management.azure.com/"
                                     },
                                     "body": {
-                                      "Comment": "Isolated by ErgoSOC-AU response playbook (manual analyst run) via Microsoft Sentinel incident.",
-                                      "IsolationType": "Full"
+                                      "properties": {
+                                        "title": "@{concat('Approve device isolation -- Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ': ', variables('MachineId'))}",
+                                        "description": "ErgoSOC-AU response playbook is requesting approval to fully isolate this device from the network. Mark this task Completed (Sentinel Portal -> this incident -> Tasks tab) to approve. If it isn't marked Completed within the timeout, the playbook proceeds without isolating the device.",
+                                        "status": "New"
+                                      }
                                     }
                                   },
                                   "runtimeConfiguration": {
@@ -2824,19 +3009,146 @@
                                     }
                                   }
                                 },
-                                "Set_IsolateResult": {
+                                "Until_IsolateApproval": {
+                                  "type": "Until",
+                                  "expression": "@equals(variables('IsolateApprovalStatus'), 'Completed')",
+                                  "limit": {
+                                    "count": 60,
+                                    "timeout": "PT30M"
+                                  },
+                                  "actions": {
+                                    "Delay_IsolateApproval": {
+                                      "type": "Wait",
+                                      "runAfter": {},
+                                      "inputs": {
+                                        "interval": {
+                                          "count": 30,
+                                          "unit": "Second"
+                                        }
+                                      }
+                                    },
+                                    "HTTP_IsolateCheckTask": {
+                                      "runAfter": {
+                                        "Delay_IsolateApproval": [
+                                          "Succeeded"
+                                        ]
+                                      },
+                                      "type": "Http",
+                                      "inputs": {
+                                        "method": "GET",
+                                        "uri": "@{concat(triggerBody()?['object']?['id'], '/tasks/', outputs('Compose_IsolateTaskId'), '?api-version=2024-03-01')}",
+                                        "headers": {
+                                          "Accept": "application/json",
+                                          "Content-Type": "application/json"
+                                        },
+                                        "authentication": {
+                                          "type": "ManagedServiceIdentity",
+                                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                                          "audience": "https://management.azure.com/"
+                                        }
+                                      },
+                                      "runtimeConfiguration": {
+                                        "secureData": {
+                                          "properties": [
+                                            "inputs"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "Set_IsolateApprovalStatus": {
+                                      "runAfter": {
+                                        "HTTP_IsolateCheckTask": [
+                                          "Succeeded",
+                                          "Failed",
+                                          "Skipped",
+                                          "TimedOut"
+                                        ]
+                                      },
+                                      "type": "SetVariable",
+                                      "inputs": {
+                                        "name": "IsolateApprovalStatus",
+                                        "value": "@if(equals(outputs('HTTP_IsolateCheckTask')?['statusCode'], 200), coalesce(outputs('HTTP_IsolateCheckTask')?['body']?['properties']?['status'], variables('IsolateApprovalStatus')), variables('IsolateApprovalStatus'))"
+                                      }
+                                    }
+                                  },
                                   "runAfter": {
-                                    "HTTP_IsolateDevice": [
+                                    "HTTP_IsolateCreateTask": [
                                       "Succeeded",
                                       "Failed",
                                       "Skipped",
                                       "TimedOut"
                                     ]
+                                  }
+                                },
+                                "Condition_IsolateDevice_Approved": {
+                                  "runAfter": {
+                                    "Until_IsolateApproval": [
+                                      "Succeeded"
+                                    ]
                                   },
-                                  "type": "SetVariable",
-                                  "inputs": {
-                                    "name": "IsolateResult",
-                                    "value": "@if(or(equals(outputs('HTTP_IsolateDevice')?['statusCode'], 200), equals(outputs('HTTP_IsolateDevice')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_IsolateDevice')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_IsolateDevice')?['body']?['error']?['message'], string(outputs('HTTP_IsolateDevice')?['body']), 'no error detail returned'))))"
+                                  "type": "If",
+                                  "expression": {
+                                    "equals": [
+                                      "@variables('IsolateApprovalStatus')",
+                                      "Completed"
+                                    ]
+                                  },
+                                  "actions": {
+                                    "HTTP_IsolateDevice": {
+                                      "runAfter": {},
+                                      "type": "Http",
+                                      "inputs": {
+                                        "method": "POST",
+                                        "uri": "@{concat('https://api.securitycenter.microsoft.com/api/machines/', variables('MachineId'), '/isolate')}",
+                                        "headers": {
+                                          "Accept": "application/json",
+                                          "Content-Type": "application/json"
+                                        },
+                                        "authentication": {
+                                          "type": "ManagedServiceIdentity",
+                                          "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                                          "audience": "https://api.securitycenter.microsoft.com"
+                                        },
+                                        "body": {
+                                          "Comment": "Isolated by ErgoSOC-AU response playbook (manual analyst run, approved via Sentinel incident task) via Microsoft Sentinel incident.",
+                                          "IsolationType": "Full"
+                                        }
+                                      },
+                                      "runtimeConfiguration": {
+                                        "secureData": {
+                                          "properties": [
+                                            "inputs"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "Set_IsolateResult": {
+                                      "runAfter": {
+                                        "HTTP_IsolateDevice": [
+                                          "Succeeded",
+                                          "Failed",
+                                          "Skipped",
+                                          "TimedOut"
+                                        ]
+                                      },
+                                      "type": "SetVariable",
+                                      "inputs": {
+                                        "name": "IsolateResult",
+                                        "value": "@if(or(equals(outputs('HTTP_IsolateDevice')?['statusCode'], 200), equals(outputs('HTTP_IsolateDevice')?['statusCode'], 201)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_IsolateDevice')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_IsolateDevice')?['body']?['error']?['message'], string(outputs('HTTP_IsolateDevice')?['body']), 'no error detail returned'))))"
+                                      }
+                                    }
+                                  },
+                                  "else": {
+                                    "actions": {
+                                      "Set_IsolateResult_NotApproved": {
+                                        "runAfter": {},
+                                        "type": "SetVariable",
+                                        "inputs": {
+                                          "name": "IsolateResult",
+                                          "value": "@concat('not approved within timeout (task status: ', variables('IsolateApprovalStatus'), ')')"
+                                        }
+                                      }
+                                    }
                                   }
                                 }
                               },
