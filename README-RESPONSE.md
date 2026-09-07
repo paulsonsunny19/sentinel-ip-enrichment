@@ -58,10 +58,22 @@ deployments). Leave it blank (the default) and nothing changes. Set it, and afte
 comment is posted, the playbook also sends a short notification to that channel with the ticket
 number, which playbook ran, and what it did.
 
-**Setup:** in the target Teams channel, **⋯ → Workflows → search "Post to a channel when a webhook
-request is received"** → follow the wizard → copy the URL it gives you. That's the value for
-`TeamsWebhookUrl`. (Teams' older "Incoming Webhook" connectors were retired by Microsoft —
-Workflows is the current supported replacement, same idea: a plain HTTPS POST URL.)
+**Setup:** in the target Teams channel, **⋯ → Workflows → search "webhook"** → select **"Send
+webhook alerts to a channel"** (skip the "to a chat" / "from specific people" / "from people in an
+org" variants — those add sender-restriction logic that would block a call coming from a managed
+identity rather than a person) → pick the Team/Channel → finish the wizard → copy the URL it gives
+you. That's the value for `TeamsWebhookUrl`. (Teams' older "Incoming Webhook" connectors were
+retired by Microsoft — Workflows is the current supported replacement, same idea: a plain HTTPS
+POST URL. The exact template name has changed over time; search "webhook" if you don't see this
+exact wording.)
+
+**The payload has to be an Adaptive Card, not plain text.** This specific Workflow template posts
+via a "Post card in a chat or channel" action, which deserializes the webhook body itself as an
+Adaptive Card — a plain `{"text": "..."}` body fails with `Property 'type' must be 'AdaptiveCard'`
+(confirmed against a real run). So every playbook's `HTTP_TeamsNotify` action sends a minimal
+Adaptive Card (`{"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", ...}]}`),
+not a bare text object — nothing you need to configure, just worth knowing if you ever look at the
+action's raw inputs and wonder why it's shaped that way.
 
 **Why this stays outside the managed-identity model everything else in this repo uses:** the HTTP
 call to the webhook URL uses no authentication at all — the URL itself is the credential, exactly

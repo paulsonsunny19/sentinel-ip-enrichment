@@ -170,6 +170,14 @@ def teams_notify_actions(run_after_name, message_parts, suffix=""):
     Sentinel incident comment (which stays the authoritative record) and
     is not retried.
 
+    The body is a minimal Adaptive Card, not a plain {"text": ...} object
+    -- Teams' current "Send webhook alerts to a channel" Workflow template
+    (the replacement for the retired classic Incoming Webhook connector)
+    uses a "Post card in a chat or channel" action that deserializes the
+    webhook payload itself as an Adaptive Card and fails with
+    "Property 'type' must be 'AdaptiveCard'" on anything else -- confirmed
+    against a real run.
+
     suffix keeps action names unique when a workflow has more than one
     call site for this (e.g. the IP/URL indicator-block playbook's two
     loops)."""
@@ -183,7 +191,18 @@ def teams_notify_actions(run_after_name, message_parts, suffix=""):
                 http_name: http_call(
                     "@{parameters('TeamsWebhookUrl')}",
                     method="POST", auth=None,
-                    body={"text": teams_message_expr(*message_parts)},
+                    body={
+                        "type": "AdaptiveCard",
+                        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                        "version": "1.4",
+                        "body": [
+                            {
+                                "type": "TextBlock",
+                                "text": teams_message_expr(*message_parts),
+                                "wrap": True,
+                            },
+                        ],
+                    },
                 ),
             },
             "else": {"actions": {}},

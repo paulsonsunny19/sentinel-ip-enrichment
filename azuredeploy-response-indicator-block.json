@@ -372,7 +372,16 @@
                               "Content-Type": "application/json"
                             },
                             "body": {
-                              "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}"
+                              "type": "AdaptiveCard",
+                              "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                              "version": "1.4",
+                              "body": [
+                                {
+                                  "type": "TextBlock",
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}",
+                                  "wrap": true
+                                }
+                              ]
                             }
                           },
                           "runtimeConfiguration": {
@@ -572,7 +581,16 @@
                               "Content-Type": "application/json"
                             },
                             "body": {
-                              "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}"
+                              "type": "AdaptiveCard",
+                              "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                              "version": "1.4",
+                              "body": [
+                                {
+                                  "type": "TextBlock",
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}",
+                                  "wrap": true
+                                }
+                              ]
                             }
                           },
                           "runtimeConfiguration": {
