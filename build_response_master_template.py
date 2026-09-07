@@ -49,6 +49,25 @@ ALL_PLAYBOOKS = [
 ]
 WITHOUT_EMAIL_PLAYBOOKS = [p for p in ALL_PLAYBOOKS if p[3] != "EmailBlock"]
 
+# A specific, curated subset: the four single-action account/device variants
+# instead of their combined originals, plus revoke-consent/FileHash/IP-URL
+# unchanged. Deliberately excludes Account disable+confirm-compromised and
+# Email block+quarantine. build_response_account_contain.py and
+# build_response_device_contain.py each appear twice below since each
+# generates more than one output file (the combined one, plus two
+# single-action variants) -- regenerate_all() running the same script twice
+# is harmless (idempotent), it just regenerates the same three files both
+# times.
+SELECTED_SEVEN_PLAYBOOKS = [
+    ("build_response_account_contain.py", "azuredeploy-response-account-revoke-sessions.json", "deploy-account-revoke-sessions", "AccountRevokeSessions", frozenset({"RevokeSessions", "ResetPassword"})),
+    ("build_response_account_contain.py", "azuredeploy-response-account-reset-password.json", "deploy-account-reset-password", "AccountResetPassword", frozenset({"RevokeSessions", "ResetPassword"})),
+    ("build_response_account_revoke_consent.py", "azuredeploy-response-account-revoke-consent.json", "deploy-account-revoke-consent", "AccountRevokeConsent"),
+    ("build_response_device_contain.py", "azuredeploy-response-device-isolate.json", "deploy-device-isolate", "DeviceIsolate", frozenset({"IsolateDevice", "RunAntiVirusScan", "RestrictAppExecution"})),
+    ("build_response_device_contain.py", "azuredeploy-response-device-scan.json", "deploy-device-scan", "DeviceScan", frozenset({"IsolateDevice", "RunAntiVirusScan", "RestrictAppExecution"})),
+    ("build_response_filehash_block.py", "azuredeploy-response-filehash-block.json", "deploy-filehash-block", "FileHashBlock"),
+    ("build_response_indicator_block.py", "azuredeploy-response-indicator-block.json", "deploy-indicator-block", "IndicatorBlock"),
+]
+
 SHARED_PARAM_MAP = {
     "UserAssignedManagedIdentityResourceId": "UserAssignedManagedIdentityResourceId",
     "TeamsWebhookUrl": "TeamsWebhookUrl",
@@ -94,7 +113,18 @@ def build(playbooks, output_filename, title, description, entities, tags, playbo
     resources = []
     outputs = {}
 
-    for script, output_json, deployment_name, prefix in playbooks:
+    for entry in playbooks:
+        script, output_json, deployment_name, prefix = entry[:4]
+        # Optional 5th element: parameter names to leave pinned to this
+        # specific nested template's own baked-in default, instead of
+        # promoting to a shared/overridable master parameter. Needed when
+        # the same underlying script is used more than once in one bundle
+        # to produce different single-action variants (e.g. the account
+        # revoke-sessions-only and reset-password-only templates both still
+        # declare RevokeSessions/ResetPassword -- with different defaults
+        # each -- so those two can't be merged into one master toggle).
+        pinned_params = entry[4] if len(entry) > 4 else frozenset()
+
         nested_template = load(output_json)
         nested_arm_params = nested_template["parameters"]
 
@@ -105,6 +135,10 @@ def build(playbooks, output_filename, title, description, entities, tags, playbo
 
         for name, spec in nested_arm_params.items():
             if name in SHARED_PARAM_MAP:
+                continue
+            if name in pinned_params:
+                # Omitted from nested_params entirely -- ARM falls back to
+                # this nested template's own defaultValue for it.
                 continue
 
             if name == "PlaybookName":
@@ -241,4 +275,37 @@ build(
     ["Account", "Host", "FileHash", "IP", "URL"],
     ["Response", "Account", "Device", "FileHash", "IP", "URL", "Bundle"],
     "six",
+)
+
+build(
+    SELECTED_SEVEN_PLAYBOOKS,
+    "azuredeploy-response-selected-seven.json",
+    "Deploy a curated set of seven ErgoSOC-AU response playbooks in one deployment",
+    (
+        "Deploys seven response (remediation) playbooks as separate, independently "
+        "runnable Logic Apps in one deployment: Account revoke-sessions-only, "
+        "Account reset-password-only, Account revoke-app-consent, Device "
+        "isolate-only, Device scan-only, FileHash block-indicator, and IP/URL "
+        "block-indicator -- all bound to the same client-owned user-assigned "
+        "managed identity. Uses the single-action account/device variants "
+        "(azuredeploy-response-account-revoke-sessions.json, "
+        "azuredeploy-response-account-reset-password.json, "
+        "azuredeploy-response-device-isolate.json, "
+        "azuredeploy-response-device-scan.json) rather than the combined "
+        "originals, so session-revoke/password-reset and isolate/scan each "
+        "show up as their own entry in Sentinel's Run playbook list instead of "
+        "one playbook with both actions toggled at deploy time. Deliberately "
+        "excludes Account disable+confirm-compromised and Email "
+        "block+quarantine. PlaybookName is exposed per playbook since each "
+        "Logic App needs a distinct name; Action and IndicatorExpirationDays "
+        "are merged into one shared parameter each, applied to both the "
+        "FileHash and IP/URL block-indicator playbooks; TeamsWebhookUrl is "
+        "merged into one shared parameter applied to all seven. SAFETY: none "
+        "of the seven are wired to a Sentinel automation rule by this "
+        "template -- an analyst manually running a playbook from the incident "
+        "is still the approval gate for every one of them."
+    ),
+    ["Account", "Host", "FileHash", "IP", "URL"],
+    ["Response", "Account", "Device", "FileHash", "IP", "URL", "Bundle"],
+    "seven",
 )
