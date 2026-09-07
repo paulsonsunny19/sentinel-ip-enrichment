@@ -606,7 +606,7 @@
                           "Content-Type": "application/json"
                         },
                         "body": {
-                          "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Host: ', replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), ''), ' | Isolate: ', variables('IsolateResult'), ' | Scan: ', variables('ScanResult'), ' | Restrict: ', variables('RestrictResult'))}"
+                          "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Host: ', replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), ''), ' | Isolate: ', variables('IsolateResult'), ' | Scan: ', variables('ScanResult'), ' | Restrict: ', variables('RestrictResult'))}"
                         }
                       },
                       "runtimeConfiguration": {

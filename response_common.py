@@ -141,11 +141,19 @@ def teams_message_expr(*extra_parts):
     owner (who may or may not be the same person) is the closest
     available field. For a definitive record of who actually ran it, see
     the Logic App's own Run History or the Azure Activity Log.
+
+    Uses workflow().name for the playbook name, not parameters('PlaybookName')
+    -- PlaybookName is only an ARM template parameter (used to name the
+    Logic App resource at deploy time), it is never passed into the
+    workflow's own runtime parameter set, so referencing it here fails at
+    runtime with "workflow parameter 'PlaybookName' is not found."
+    workflow().name is the Logic App's own resource name, which is always
+    exactly what PlaybookName was at deploy time.
     """
     base = [
         "'ErgoSOC-AU response playbook run | Ticket: Incident #'",
         "string(triggerBody()?['object']?['properties']?['incidentNumber'])",
-        "' | Playbook: '", "parameters('PlaybookName')",
+        "' | Playbook: '", "workflow().name",
         "' | Incident owner (best-effort, not necessarily who ran this): '",
         "coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], "
         "triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned')",

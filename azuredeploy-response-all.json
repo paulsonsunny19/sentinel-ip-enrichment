@@ -827,7 +827,7 @@
                                   "Content-Type": "application/json"
                                 },
                                 "body": {
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | Revoke sessions: ', variables('RevokeResult'), ' | Reset password: ', variables('ResetResult'))}"
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | Revoke sessions: ', variables('RevokeResult'), ' | Reset password: ', variables('ResetResult'))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -1499,7 +1499,7 @@
                                   "Content-Type": "application/json"
                                 },
                                 "body": {
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | Disable account: ', variables('DisableResult'), ' | Confirm compromised: ', variables('ConfirmResult'))}"
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | Disable account: ', variables('DisableResult'), ' | Confirm compromised: ', variables('ConfirmResult'))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -2170,7 +2170,7 @@
                                   "Content-Type": "application/json"
                                 },
                                 "body": {
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | OAuth grants: ', variables('GrantsSummary'))}"
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | OAuth grants: ', variables('GrantsSummary'))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -2863,7 +2863,7 @@
                                   "Content-Type": "application/json"
                                 },
                                 "body": {
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Host: ', replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), ''), ' | Isolate: ', variables('IsolateResult'), ' | Scan: ', variables('ScanResult'), ' | Restrict: ', variables('RestrictResult'))}"
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Host: ', replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), ''), ' | Isolate: ', variables('IsolateResult'), ' | Scan: ', variables('ScanResult'), ' | Restrict: ', variables('RestrictResult'))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -3613,7 +3613,7 @@
                                   "Content-Type": "application/json"
                                 },
                                 "body": {
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Sender: ', outputs('Compose_Sender'), ' | Domain block: ', variables('DomainJobResult'), ' | Address block: ', variables('AddressJobResult'))}"
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Sender: ', outputs('Compose_Sender'), ' | Domain block: ', variables('DomainJobResult'), ' | Address block: ', variables('AddressJobResult'))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -4128,7 +4128,7 @@
                                   "Content-Type": "application/json"
                                 },
                                 "body": {
-                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Hash: ', outputs('Compose_Clean_Hash'), ' | Block: ', variables('BlockResult'))}"
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Hash: ', outputs('Compose_Clean_Hash'), ' | Block: ', variables('BlockResult'))}"
                                 }
                               },
                               "runtimeConfiguration": {
@@ -4599,7 +4599,7 @@
                                       "Content-Type": "application/json"
                                     },
                                     "body": {
-                                      "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}"
+                                      "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}"
                                     }
                                   },
                                   "runtimeConfiguration": {
@@ -4799,7 +4799,7 @@
                                       "Content-Type": "application/json"
                                     },
                                     "body": {
-                                      "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}"
+                                      "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}"
                                     }
                                   },
                                   "runtimeConfiguration": {

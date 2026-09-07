@@ -372,7 +372,7 @@
                               "Content-Type": "application/json"
                             },
                             "body": {
-                              "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}"
+                              "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}"
                             }
                           },
                           "runtimeConfiguration": {
@@ -572,7 +572,7 @@
                               "Content-Type": "application/json"
                             },
                             "body": {
-                              "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}"
+                              "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', workflow().name, ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}"
                             }
                           },
                           "runtimeConfiguration": {
