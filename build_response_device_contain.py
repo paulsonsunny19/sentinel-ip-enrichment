@@ -41,6 +41,7 @@ from response_common import (
     http_call,
     result_expr,
     sentinel_connection_resource,
+    teams_notify_actions,
     workflow_resource,
     write_template,
 )
@@ -52,6 +53,11 @@ KQL_HOST = (
     "@{replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], "
     "items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), '')}"
 )
+# Same expression as KQL_HOST, without the '@{'/'}' string-interpolation
+# wrapper -- needed as a raw concat() argument inside teams_message_expr(),
+# which builds one already-"@"-prefixed top-level expression rather than a
+# string with embedded interpolations.
+KQL_HOST_RAW = KQL_HOST[2:-1]
 
 DEVICE_ID_KQL = f"""let host = '{KQL_HOST}';
 DeviceInfo
@@ -89,6 +95,7 @@ def build_definition():
             "IsolateDevice": {"type": "Bool", "defaultValue": True},
             "RunAntiVirusScan": {"type": "Bool", "defaultValue": True},
             "RestrictAppExecution": {"type": "Bool", "defaultValue": False},
+            "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -256,6 +263,15 @@ def build_definition():
                             "path": "/Incidents/Comment",
                         },
                     },
+                    **teams_notify_actions(
+                        "Add_comment_to_incident_V3",
+                        [
+                            "' | Host: '", KQL_HOST_RAW,
+                            "' | Isolate: '", "variables('IsolateResult')",
+                            "' | Scan: '", "variables('ScanResult')",
+                            "' | Restrict: '", "variables('RestrictResult')",
+                        ],
+                    ),
                 },
             },
         },
@@ -341,6 +357,7 @@ def build_template(
                     "IsolateDevice": {"value": "[parameters('IsolateDevice')]"},
                     "RunAntiVirusScan": {"value": "[parameters('RunAntiVirusScan')]"},
                     "RestrictAppExecution": {"value": "[parameters('RestrictAppExecution')]"},
+                    "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
                 },
             ),
         ],

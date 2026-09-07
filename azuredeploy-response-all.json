@@ -41,6 +41,13 @@
         "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by all seven Logic Apps and every managed-identity connection/HTTP call."
       }
     },
+    "TeamsWebhookUrl": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional. A Microsoft Teams channel's webhook URL, shared by all seven Logic Apps -- see each playbook's own TeamsWebhookUrl parameter description. Leave blank (the default) to skip Teams notifications entirely."
+      }
+    },
     "AccountContainPlaybookName": {
       "type": "string",
       "defaultValue": "ErgoSOC-AU-Account-RevokeAndReset",
@@ -280,6 +287,13 @@
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
               }
             },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
+              }
+            },
             "RevokeSessions": {
               "type": "bool",
               "defaultValue": true,
@@ -349,6 +363,10 @@
                     "ResetPassword": {
                       "type": "Bool",
                       "defaultValue": true
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
+                      "defaultValue": ""
                     }
                   },
                   "triggers": {
@@ -781,6 +799,49 @@
                             },
                             "path": "/Incidents/Comment"
                           }
+                        },
+                        "Condition_TeamsNotify": {
+                          "runAfter": {
+                            "Add_comment_to_incident_V3": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "If",
+                          "expression": {
+                            "not": {
+                              "equals": [
+                                "@parameters('TeamsWebhookUrl')",
+                                ""
+                              ]
+                            }
+                          },
+                          "actions": {
+                            "HTTP_TeamsNotify": {
+                              "runAfter": {},
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{parameters('TeamsWebhookUrl')}",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | Revoke sessions: ', variables('RevokeResult'), ' | Reset password: ', variables('ResetResult'))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {}
+                          }
                         }
                       }
                     }
@@ -808,6 +869,9 @@
                   },
                   "ResetPassword": {
                     "value": "[parameters('ResetPassword')]"
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -835,6 +899,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('AccountContainPlaybookName')]"
@@ -898,6 +965,13 @@
               "minLength": 1,
               "metadata": {
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+              }
+            },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
               }
             },
             "DisableAccount": {
@@ -969,6 +1043,10 @@
                     "ConfirmCompromised": {
                       "type": "Bool",
                       "defaultValue": true
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
+                      "defaultValue": ""
                     }
                   },
                   "triggers": {
@@ -1393,6 +1471,49 @@
                             },
                             "path": "/Incidents/Comment"
                           }
+                        },
+                        "Condition_TeamsNotify": {
+                          "runAfter": {
+                            "Add_comment_to_incident_V3": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "If",
+                          "expression": {
+                            "not": {
+                              "equals": [
+                                "@parameters('TeamsWebhookUrl')",
+                                ""
+                              ]
+                            }
+                          },
+                          "actions": {
+                            "HTTP_TeamsNotify": {
+                              "runAfter": {},
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{parameters('TeamsWebhookUrl')}",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | Disable account: ', variables('DisableResult'), ' | Confirm compromised: ', variables('ConfirmResult'))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {}
+                          }
                         }
                       }
                     }
@@ -1420,6 +1541,9 @@
                   },
                   "ConfirmCompromised": {
                     "value": "[parameters('ConfirmCompromised')]"
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -1447,6 +1571,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('AccountDisablePlaybookName')]"
@@ -1511,6 +1638,13 @@
               "metadata": {
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
               }
+            },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
+              }
             }
           },
           "variables": {
@@ -1559,6 +1693,10 @@
                     "$connections": {
                       "defaultValue": {},
                       "type": "Object"
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
+                      "defaultValue": ""
                     }
                   },
                   "triggers": {
@@ -2004,6 +2142,49 @@
                             },
                             "path": "/Incidents/Comment"
                           }
+                        },
+                        "Condition_TeamsNotify": {
+                          "runAfter": {
+                            "Add_comment_to_incident_V3": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "If",
+                          "expression": {
+                            "not": {
+                              "equals": [
+                                "@parameters('TeamsWebhookUrl')",
+                                ""
+                              ]
+                            }
+                          },
+                          "actions": {
+                            "HTTP_TeamsNotify": {
+                              "runAfter": {},
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{parameters('TeamsWebhookUrl')}",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Account: ', outputs('Compose_User_Ref'), ' | OAuth grants: ', variables('GrantsSummary'))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {}
+                          }
                         }
                       }
                     }
@@ -2025,6 +2206,9 @@
                         }
                       }
                     }
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -2052,6 +2236,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('AccountRevokeConsentPlaybookName')]"
@@ -2109,6 +2296,13 @@
               "minLength": 1,
               "metadata": {
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+              }
+            },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
               }
             },
             "IsolateDevice": {
@@ -2191,6 +2385,10 @@
                     "RestrictAppExecution": {
                       "type": "Bool",
                       "defaultValue": false
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
+                      "defaultValue": ""
                     }
                   },
                   "triggers": {
@@ -2637,6 +2835,49 @@
                             },
                             "path": "/Incidents/Comment"
                           }
+                        },
+                        "Condition_TeamsNotify": {
+                          "runAfter": {
+                            "Add_comment_to_incident_V3": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "If",
+                          "expression": {
+                            "not": {
+                              "equals": [
+                                "@parameters('TeamsWebhookUrl')",
+                                ""
+                              ]
+                            }
+                          },
+                          "actions": {
+                            "HTTP_TeamsNotify": {
+                              "runAfter": {},
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{parameters('TeamsWebhookUrl')}",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Host: ', replace(toLower(string(coalesce(items('For_each_host_entity')?['HostName'], items('For_each_host_entity')?['NetBiosName'], ''))), decodeUriComponent('%27'), ''), ' | Isolate: ', variables('IsolateResult'), ' | Scan: ', variables('ScanResult'), ' | Restrict: ', variables('RestrictResult'))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {}
+                          }
                         }
                       }
                     }
@@ -2667,6 +2908,9 @@
                   },
                   "RestrictAppExecution": {
                     "value": "[parameters('RestrictAppExecution')]"
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -2694,6 +2938,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('DeviceContainPlaybookName')]"
@@ -2757,6 +3004,13 @@
               "minLength": 1,
               "metadata": {
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+              }
+            },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
               }
             },
             "BlockSenderDomain": {
@@ -2882,6 +3136,10 @@
                     },
                     "ExoOrganization": {
                       "type": "String",
+                      "defaultValue": ""
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
                       "defaultValue": ""
                     }
                   },
@@ -3155,7 +3413,8 @@
                                       "Organization": "@{parameters('ExoOrganization')}",
                                       "Value": "@{outputs('Compose_SenderDomain')}",
                                       "EntryType": "Sender",
-                                      "Action": "Block"
+                                      "Action": "Block",
+                                      "Notes": "@{concat('Blocked by ErgoSOC-AU response playbook -- Sentinel incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
                                     }
                                   }
                                 }
@@ -3254,7 +3513,8 @@
                                       "Organization": "@{parameters('ExoOrganization')}",
                                       "Value": "@{outputs('Compose_Sender')}",
                                       "EntryType": "Sender",
-                                      "Action": "Block"
+                                      "Action": "Block",
+                                      "Notes": "@{concat('Blocked by ErgoSOC-AU response playbook -- Sentinel incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']))}"
                                     }
                                   }
                                 }
@@ -3325,6 +3585,49 @@
                             },
                             "path": "/Incidents/Comment"
                           }
+                        },
+                        "Condition_TeamsNotify": {
+                          "runAfter": {
+                            "Add_comment_to_incident_V3": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "If",
+                          "expression": {
+                            "not": {
+                              "equals": [
+                                "@parameters('TeamsWebhookUrl')",
+                                ""
+                              ]
+                            }
+                          },
+                          "actions": {
+                            "HTTP_TeamsNotify": {
+                              "runAfter": {},
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{parameters('TeamsWebhookUrl')}",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Sender: ', outputs('Compose_Sender'), ' | Domain block: ', variables('DomainJobResult'), ' | Address block: ', variables('AddressJobResult'))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {}
+                          }
                         }
                       }
                     }
@@ -3367,6 +3670,9 @@
                   },
                   "ExoOrganization": {
                     "value": "[parameters('ExoOrganization')]"
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -3394,6 +3700,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('EmailBlockPlaybookName')]"
@@ -3471,6 +3780,13 @@
               "minLength": 1,
               "metadata": {
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+              }
+            },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
               }
             },
             "Action": {
@@ -3553,6 +3869,10 @@
                     "IndicatorExpirationDays": {
                       "type": "Int",
                       "defaultValue": 180
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
+                      "defaultValue": ""
                     }
                   },
                   "triggers": {
@@ -3780,6 +4100,49 @@
                             },
                             "path": "/Incidents/Comment"
                           }
+                        },
+                        "Condition_TeamsNotify": {
+                          "runAfter": {
+                            "Add_comment_to_incident_V3": [
+                              "Succeeded"
+                            ]
+                          },
+                          "type": "If",
+                          "expression": {
+                            "not": {
+                              "equals": [
+                                "@parameters('TeamsWebhookUrl')",
+                                ""
+                              ]
+                            }
+                          },
+                          "actions": {
+                            "HTTP_TeamsNotify": {
+                              "runAfter": {},
+                              "type": "Http",
+                              "inputs": {
+                                "method": "POST",
+                                "uri": "@{parameters('TeamsWebhookUrl')}",
+                                "headers": {
+                                  "Accept": "application/json",
+                                  "Content-Type": "application/json"
+                                },
+                                "body": {
+                                  "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | Hash: ', outputs('Compose_Clean_Hash'), ' | Block: ', variables('BlockResult'))}"
+                                }
+                              },
+                              "runtimeConfiguration": {
+                                "secureData": {
+                                  "properties": [
+                                    "inputs"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "else": {
+                            "actions": {}
+                          }
                         }
                       }
                     }
@@ -3807,6 +4170,9 @@
                   },
                   "IndicatorExpirationDays": {
                     "value": "[parameters('IndicatorExpirationDays')]"
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -3834,6 +4200,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('FileHashBlockPlaybookName')]"
@@ -3898,6 +4267,13 @@
               "minLength": 1,
               "metadata": {
                 "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+              }
+            },
+            "TeamsWebhookUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
               }
             },
             "BlockIP": {
@@ -4002,6 +4378,10 @@
                     "IndicatorExpirationDays": {
                       "type": "Int",
                       "defaultValue": 180
+                    },
+                    "TeamsWebhookUrl": {
+                      "type": "SecureString",
+                      "defaultValue": ""
                     }
                   },
                   "triggers": {
@@ -4191,6 +4571,49 @@
                                 },
                                 "path": "/Incidents/Comment"
                               }
+                            },
+                            "Condition_TeamsNotify_IP": {
+                              "runAfter": {
+                                "Add_comment_to_incident_IP": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "type": "If",
+                              "expression": {
+                                "not": {
+                                  "equals": [
+                                    "@parameters('TeamsWebhookUrl')",
+                                    ""
+                                  ]
+                                }
+                              },
+                              "actions": {
+                                "HTTP_TeamsNotify_IP": {
+                                  "runAfter": {},
+                                  "type": "Http",
+                                  "inputs": {
+                                    "method": "POST",
+                                    "uri": "@{parameters('TeamsWebhookUrl')}",
+                                    "headers": {
+                                      "Accept": "application/json",
+                                      "Content-Type": "application/json"
+                                    },
+                                    "body": {
+                                      "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | IP: ', items('For_each_IP_entity')?['Address'], ' | Block: ', variables('IpBlockResult'))}"
+                                    }
+                                  },
+                                  "runtimeConfiguration": {
+                                    "secureData": {
+                                      "properties": [
+                                        "inputs"
+                                      ]
+                                    }
+                                  }
+                                }
+                              },
+                              "else": {
+                                "actions": {}
+                              }
                             }
                           }
                         }
@@ -4348,6 +4771,49 @@
                                 },
                                 "path": "/Incidents/Comment"
                               }
+                            },
+                            "Condition_TeamsNotify_URL": {
+                              "runAfter": {
+                                "Add_comment_to_incident_URL": [
+                                  "Succeeded"
+                                ]
+                              },
+                              "type": "If",
+                              "expression": {
+                                "not": {
+                                  "equals": [
+                                    "@parameters('TeamsWebhookUrl')",
+                                    ""
+                                  ]
+                                }
+                              },
+                              "actions": {
+                                "HTTP_TeamsNotify_URL": {
+                                  "runAfter": {},
+                                  "type": "Http",
+                                  "inputs": {
+                                    "method": "POST",
+                                    "uri": "@{parameters('TeamsWebhookUrl')}",
+                                    "headers": {
+                                      "Accept": "application/json",
+                                      "Content-Type": "application/json"
+                                    },
+                                    "body": {
+                                      "text": "@{concat('ErgoSOC-AU response playbook run | Ticket: Incident #', string(triggerBody()?['object']?['properties']?['incidentNumber']), ' | Playbook: ', parameters('PlaybookName'), ' | Incident owner (best-effort, not necessarily who ran this): ', coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned'), ' | URL: ', outputs('Compose_Clean_Url'), ' | Block: ', variables('UrlBlockResult'))}"
+                                    }
+                                  },
+                                  "runtimeConfiguration": {
+                                    "secureData": {
+                                      "properties": [
+                                        "inputs"
+                                      ]
+                                    }
+                                  }
+                                }
+                              },
+                              "else": {
+                                "actions": {}
+                              }
                             }
                           }
                         }
@@ -4386,6 +4852,9 @@
                   },
                   "IndicatorExpirationDays": {
                     "value": "[parameters('IndicatorExpirationDays')]"
+                  },
+                  "TeamsWebhookUrl": {
+                    "value": "[parameters('TeamsWebhookUrl')]"
                   }
                 }
               }
@@ -4413,6 +4882,9 @@
         "parameters": {
           "UserAssignedManagedIdentityResourceId": {
             "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
           },
           "PlaybookName": {
             "value": "[parameters('IndicatorBlockPlaybookName')]"

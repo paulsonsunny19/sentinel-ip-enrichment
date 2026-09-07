@@ -41,6 +41,7 @@ from response_common import (
     http_call,
     result_expr,
     sentinel_connection_resource,
+    teams_notify_actions,
     workflow_resource,
     write_template,
 )
@@ -139,6 +140,7 @@ def build_definition():
             "RunbookName": {"type": "String", "defaultValue": "Set-ErgoSOC-TenantBlockListItem"},
             "ExoManagedIdentityClientId": {"type": "String", "defaultValue": ""},
             "ExoOrganization": {"type": "String", "defaultValue": ""},
+            "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -333,6 +335,14 @@ def build_definition():
                             "path": "/Incidents/Comment",
                         },
                     },
+                    **teams_notify_actions(
+                        "Add_comment_to_incident_V3",
+                        [
+                            "' | Sender: '", "outputs('Compose_Sender')",
+                            "' | Domain block: '", "variables('DomainJobResult')",
+                            "' | Address block: '", "variables('AddressJobResult')",
+                        ],
+                    ),
                 },
             },
         },
@@ -419,6 +429,7 @@ def build_template():
                     "RunbookName": {"value": "[parameters('RunbookName')]"},
                     "ExoManagedIdentityClientId": {"value": "[parameters('ExoManagedIdentityClientId')]"},
                     "ExoOrganization": {"value": "[parameters('ExoOrganization')]"},
+                    "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
                 },
             ),
         ],

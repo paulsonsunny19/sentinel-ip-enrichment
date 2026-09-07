@@ -71,13 +71,19 @@ def after(*names, states=("Succeeded",)):
 
 def http_call(uri_expr, method="GET", auth=GRAPH_AUTH, body=None):
     """A plain HTTP action. runAfter is left empty -- callers set it themselves,
-    same convention build_account_template.py's graph_get() uses."""
+    same convention build_account_template.py's graph_get() uses.
+
+    auth=None omits the "authentication" property entirely (valid, and
+    means no auth) -- used for the Teams webhook call, where the webhook
+    URL itself is the credential, not a managed-identity call like every
+    other HTTP action in this repo."""
     inputs = {
         "method": method,
         "uri": uri_expr,
         "headers": {"Accept": "application/json", "Content-Type": "application/json"},
-        "authentication": auth,
     }
+    if auth is not None:
+        inputs["authentication"] = auth
     if body is not None:
         inputs["body"] = body
     return {
@@ -112,10 +118,69 @@ def base_parameters(default_playbook_name, extra=None):
             "type": "string", "minLength": 1,
             "metadata": {"description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."},
         },
+        "TeamsWebhookUrl": {
+            "type": "securestring", "defaultValue": "",
+            "metadata": {"description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Post to a channel when a webhook request is received\". When set, this playbook also posts a short notification (ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."},
+        },
     }
     if extra:
         params.update(extra)
     return params
+
+
+def teams_message_expr(*extra_parts):
+    """The WDL expression (with its '@{'/'}' wrapper) for the Teams
+    notification message body. extra_parts are raw WDL expression
+    fragments (no leading @, each a valid concat() argument) describing
+    what this specific playbook did -- appended after the shared
+    ticket/playbook/owner prefix every playbook's notification shares.
+
+    "Incident owner" is a best-effort stand-in for "who ran this":
+    Sentinel's manual "Run playbook" trigger does not pass the initiating
+    analyst's identity into the trigger body, so the incident's assigned
+    owner (who may or may not be the same person) is the closest
+    available field. For a definitive record of who actually ran it, see
+    the Logic App's own Run History or the Azure Activity Log.
+    """
+    base = [
+        "'ErgoSOC-AU response playbook run | Ticket: Incident #'",
+        "string(triggerBody()?['object']?['properties']?['incidentNumber'])",
+        "' | Playbook: '", "parameters('PlaybookName')",
+        "' | Incident owner (best-effort, not necessarily who ran this): '",
+        "coalesce(triggerBody()?['object']?['properties']?['owner']?['userPrincipalName'], "
+        "triggerBody()?['object']?['properties']?['owner']?['assignedTo'], 'unassigned')",
+    ]
+    return "@{concat(" + ", ".join(base + list(extra_parts)) + ")}"
+
+
+def teams_notify_actions(run_after_name, message_parts, suffix=""):
+    """Optional, fire-and-forget Teams channel notification, gated on the
+    TeamsWebhookUrl parameter being set (empty by default -- opt-in per
+    deployment, same pattern as the email playbook's AutoExecuteBlock).
+    No authentication on the HTTP call itself: the webhook URL is the
+    credential. A delivery failure here is not reported back to the
+    Sentinel incident comment (which stays the authoritative record) and
+    is not retried.
+
+    suffix keeps action names unique when a workflow has more than one
+    call site for this (e.g. the IP/URL indicator-block playbook's two
+    loops)."""
+    condition_name = f"Condition_TeamsNotify{suffix}"
+    http_name = f"HTTP_TeamsNotify{suffix}"
+    return {
+        condition_name: {
+            "runAfter": after(run_after_name), "type": "If",
+            "expression": {"not": {"equals": ["@parameters('TeamsWebhookUrl')", ""]}},
+            "actions": {
+                http_name: http_call(
+                    "@{parameters('TeamsWebhookUrl')}",
+                    method="POST", auth=None,
+                    body={"text": teams_message_expr(*message_parts)},
+                ),
+            },
+            "else": {"actions": {}},
+        },
+    }
 
 
 def sentinel_connection_resource():

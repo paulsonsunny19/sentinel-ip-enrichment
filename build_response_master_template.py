@@ -51,6 +51,7 @@ WITHOUT_EMAIL_PLAYBOOKS = [p for p in ALL_PLAYBOOKS if p[3] != "EmailBlock"]
 
 SHARED_PARAM_MAP = {
     "UserAssignedManagedIdentityResourceId": "UserAssignedManagedIdentityResourceId",
+    "TeamsWebhookUrl": "TeamsWebhookUrl",
 }
 
 # Parameter names that appear in more than one playbook and are deliberately
@@ -84,6 +85,10 @@ def build(playbooks, output_filename, title, description, entities, tags, playbo
         "UserAssignedManagedIdentityResourceId": {
             "type": "string", "minLength": 1,
             "metadata": {"description": f"Required. Full resource ID of the existing client-owned user-assigned managed identity used by all {playbook_count_word} Logic Apps and every managed-identity connection/HTTP call."},
+        },
+        "TeamsWebhookUrl": {
+            "type": "securestring", "defaultValue": "",
+            "metadata": {"description": f"Optional. A Microsoft Teams channel's webhook URL, shared by all {playbook_count_word} Logic Apps -- see each playbook's own TeamsWebhookUrl parameter description. Leave blank (the default) to skip Teams notifications entirely."},
         },
     }
     resources = []

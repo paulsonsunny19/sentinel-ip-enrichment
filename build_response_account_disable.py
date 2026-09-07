@@ -25,6 +25,7 @@ from response_common import (
     http_call,
     result_expr,
     sentinel_connection_resource,
+    teams_notify_actions,
     workflow_resource,
     write_template,
 )
@@ -59,6 +60,7 @@ def build_definition():
             "$connections": {"defaultValue": {}, "type": "Object"},
             "DisableAccount": {"type": "Bool", "defaultValue": True},
             "ConfirmCompromised": {"type": "Bool", "defaultValue": True},
+            "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -237,6 +239,14 @@ def build_definition():
                             "path": "/Incidents/Comment",
                         },
                     },
+                    **teams_notify_actions(
+                        "Add_comment_to_incident_V3",
+                        [
+                            "' | Account: '", "outputs('Compose_User_Ref')",
+                            "' | Disable account: '", "variables('DisableResult')",
+                            "' | Confirm compromised: '", "variables('ConfirmResult')",
+                        ],
+                    ),
                 },
             },
         },
@@ -303,6 +313,7 @@ def build_template():
                 extra_deploy_parameters={
                     "DisableAccount": {"value": "[parameters('DisableAccount')]"},
                     "ConfirmCompromised": {"value": "[parameters('ConfirmCompromised')]"},
+                    "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
                 },
             ),
         ],

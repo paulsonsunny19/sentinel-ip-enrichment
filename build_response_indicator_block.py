@@ -51,6 +51,7 @@ from response_common import (
     http_call,
     result_expr,
     sentinel_connection_resource,
+    teams_notify_actions,
     workflow_resource,
     write_template,
 )
@@ -101,11 +102,14 @@ def indicator_body(indicator_type, value_expr, title_prefix):
     }
 
 
-def comment_actions(suffix, html_expr, run_after_name, connection_name_expr=SENTINEL_CONN):
+def comment_actions(suffix, html_expr, run_after_name, teams_message_parts, connection_name_expr=SENTINEL_CONN):
     """suffix keeps these action names unique from any other comment_actions()
     call site in the same workflow -- this file has two independent Foreach
     loops (IP and URL), and Logic Apps requires action names to be unique
-    across the whole workflow, not just within their own loop."""
+    across the whole workflow, not just within their own loop.
+
+    teams_message_parts is passed straight through to teams_notify_actions()
+    -- the "what happened" fragment specific to this call site (IP or URL)."""
     compose_name = f"Compose_Entity_Comment_{suffix}"
     safe_name = f"Compose_Entity_Comment_Safe_{suffix}"
     add_name = f"Add_comment_to_incident_{suffix}"
@@ -137,6 +141,7 @@ def comment_actions(suffix, html_expr, run_after_name, connection_name_expr=SENT
                 "path": "/Incidents/Comment",
             },
         },
+        **teams_notify_actions(add_name, teams_message_parts, suffix=f"_{suffix}"),
     }
 
 
@@ -174,7 +179,13 @@ def build_ip_section():
                     "type": "SetVariable",
                     "inputs": {"name": "IpBlockResult", "value": result_expr("HTTP_SubmitIpIndicator", [200])},
                 },
-                **comment_actions("IP", HEADER_IP + IP_ROW, "Set_IpBlockResult"),
+                **comment_actions(
+                    "IP", HEADER_IP + IP_ROW, "Set_IpBlockResult",
+                    teams_message_parts=[
+                        "' | IP: '", "items('For_each_IP_entity')?['Address']",
+                        "' | Block: '", "variables('IpBlockResult')",
+                    ],
+                ),
             },
         },
     }
@@ -221,7 +232,13 @@ def build_url_section():
                     "type": "SetVariable",
                     "inputs": {"name": "UrlBlockResult", "value": result_expr("HTTP_SubmitUrlIndicator", [200])},
                 },
-                **comment_actions("URL", HEADER_URL + URL_ROW, "Set_UrlBlockResult"),
+                **comment_actions(
+                    "URL", HEADER_URL + URL_ROW, "Set_UrlBlockResult",
+                    teams_message_parts=[
+                        "' | URL: '", "outputs('Compose_Clean_Url')",
+                        "' | Block: '", "variables('UrlBlockResult')",
+                    ],
+                ),
             },
         },
     }
@@ -237,6 +254,7 @@ def build_definition():
             "BlockUrl": {"type": "Bool", "defaultValue": True},
             "Action": {"type": "String", "defaultValue": "Block"},
             "IndicatorExpirationDays": {"type": "Int", "defaultValue": 180},
+            "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -332,6 +350,7 @@ def build_template():
                     "BlockUrl": {"value": "[parameters('BlockUrl')]"},
                     "Action": {"value": "[parameters('Action')]"},
                     "IndicatorExpirationDays": {"value": "[parameters('IndicatorExpirationDays')]"},
+                    "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
                 },
             ),
         ],

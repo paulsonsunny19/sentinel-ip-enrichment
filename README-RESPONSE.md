@@ -50,6 +50,41 @@ says `disabled by deployment setting`; if the entity's Entra object ID or Defend
 couldn't be resolved, it says `skipped - could not resolve ...`. You can always tell, from the
 comment alone, whether something actually happened.
 
+## Optional: notify a Teams channel when a playbook runs
+
+Every response playbook has a `TeamsWebhookUrl` parameter (one shared value across all seven,
+including in the combined `azuredeploy-response-all.json`/`azuredeploy-response-without-email.json`
+deployments). Leave it blank (the default) and nothing changes. Set it, and after the incident
+comment is posted, the playbook also sends a short notification to that channel with the ticket
+number, which playbook ran, and what it did.
+
+**Setup:** in the target Teams channel, **⋯ → Workflows → search "Post to a channel when a webhook
+request is received"** → follow the wizard → copy the URL it gives you. That's the value for
+`TeamsWebhookUrl`. (Teams' older "Incoming Webhook" connectors were retired by Microsoft —
+Workflows is the current supported replacement, same idea: a plain HTTPS POST URL.)
+
+**Why this stays outside the managed-identity model everything else in this repo uses:** the HTTP
+call to the webhook URL uses no authentication at all — the URL itself is the credential, exactly
+like every other Teams/Power Automate webhook integration. That's deliberate, not an oversight:
+adding a Teams *Graph* integration (posting as an app via `ChannelMessage.Send`) would mean either
+a new permission grant with its own consent/propagation story, or Resource-Specific Consent scoped
+per-team — a heavier trust escalation than "one plain webhook URL, one deployment parameter" for
+what's meant to be a convenience notification, not a system of record.
+
+**What the message contains, and one honest limitation:** ticket (Sentinel incident number),
+playbook name, and a summary of what was done (varies per playbook — e.g. "Revoke sessions: OK |
+Reset password: disabled by deployment setting"). It also includes the incident's **assigned
+owner** as a best-effort stand-in for "who ran this" — Sentinel's manual "Run playbook" trigger
+does not pass the initiating analyst's identity into the trigger payload, so the owner (who may or
+may not be the same person who clicked Run) is the closest field actually available inside the
+workflow. For a definitive record of who ran a playbook, check the Logic App's own **Run History**
+in the Azure Portal, or the Azure Activity Log — not this notification.
+
+**Delivery is fire-and-forget:** if the Teams webhook call fails (wrong URL, channel/Workflow
+deleted, etc.), that failure is not retried and not reported back into the Sentinel incident
+comment, which remains the authoritative record of what the playbook actually did. Treat the Teams
+message as a convenience ping, not something to build an alerting pipeline on top of.
+
 ## Permissions
 
 These need materially more than the enrichment playbooks: write-scope Graph permissions, and for

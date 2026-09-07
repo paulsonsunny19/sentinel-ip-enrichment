@@ -33,6 +33,7 @@ from response_common import (
     base_parameters,
     http_call,
     sentinel_connection_resource,
+    teams_notify_actions,
     workflow_resource,
     write_template,
 )
@@ -68,6 +69,7 @@ def build_definition():
         "contentVersion": "1.0.0.0",
         "parameters": {
             "$connections": {"defaultValue": {}, "type": "Object"},
+            "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
         },
         "triggers": {
             "Microsoft_Sentinel_incident": {
@@ -260,6 +262,13 @@ def build_definition():
                             "path": "/Incidents/Comment",
                         },
                     },
+                    **teams_notify_actions(
+                        "Add_comment_to_incident_V3",
+                        [
+                            "' | Account: '", "outputs('Compose_User_Ref')",
+                            "' | OAuth grants: '", "variables('GrantsSummary')",
+                        ],
+                    ),
                 },
             },
         },
@@ -314,7 +323,13 @@ def build_template():
         },
         "resources": [
             sentinel_connection_resource(),
-            workflow_resource(definition, "ErgoSOC-AU-Account-RevokeAppConsent"),
+            workflow_resource(
+                definition,
+                "ErgoSOC-AU-Account-RevokeAppConsent",
+                extra_deploy_parameters={
+                    "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
+                },
+            ),
         ],
         "outputs": base_outputs(),
     }
