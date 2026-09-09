@@ -61,6 +61,56 @@ INDICATOR_EXPIRATION_EXPR = (
     "addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
 )
 
+# Microsoft Sentinel "entity" trigger (Preview) -- an alternative to the
+# incident trigger every other playbook in this repo uses. Run manually by
+# selecting a single entity inside an incident's overview blade, not by an
+# automation rule (entity-triggered playbooks can't be called by one -- a
+# real platform limitation, not a choice made here). Confirmed against a
+# real, working Account-entity playbook built in the Portal (Code view +
+# dynamic-content picker) this session:
+#   - path stays generic ("/entity/@{encodeURIComponent('')}") -- Sentinel
+#     appears to filter which playbooks show up for a given entity type
+#     using the ARM template's own "entities" metadata tag, not anything
+#     baked into the trigger's runtime path.
+#   - triggerBody() is NOT incident-shaped the way the incident trigger's
+#     is -- nothing in the verified example referenced triggerBody() at
+#     all. "Entities - Get <type>" needs no body input for this trigger
+#     (contrast the incident trigger, which must pass
+#     triggerBody()?['object']?['properties']?['relatedEntities']).
+#   - Incident linkage comes from a distinct trigger output surfaced in
+#     the Designer's dynamic-content picker as "Incident ARM ID
+#     (Optional)" -- optional because it's empty when the playbook was
+#     run from a context with no incident (e.g. Hunting). The literal
+#     JSON field name/casing (INCIDENT_ARM_ID_EXPR below) is this
+#     session's best-confidence read, not independently re-verified --
+#     confirm it against a real run before relying on it, same as every
+#     other new-API integration in this repo.
+ENTITY_TRIGGER = {
+    "Microsoft_Sentinel_entity": {
+        "type": "ApiConnectionWebhook",
+        "inputs": {
+            "host": {"connection": {"name": SENTINEL_CONN}},
+            "body": {"callback_url": "@listCallbackUrl()"},
+            "path": "/entity/@{encodeURIComponent('')}",
+        },
+    }
+}
+
+# Best-confidence field name for the entity trigger's "Incident ARM ID
+# (Optional)" dynamic-content token -- see ENTITY_TRIGGER's comment above
+# for the confidence caveat. Empty string when the playbook was run
+# without an associated incident.
+#
+# Two forms, same expression: INCIDENT_ARM_ID_EXPR (with its leading '@')
+# for use as an entire top-level field value (e.g. "incidentArmId": ...,
+# or as a whole element of an "equals" array) or an entire
+# "expression" string; INCIDENT_ARM_ID_EXPR_RAW (no leading '@') for
+# embedding inside a compound expression that's already inside its own
+# '@{...}' wrapper or its own leading '@' -- a nested '@' there is invalid
+# WDL syntax.
+INCIDENT_ARM_ID_EXPR_RAW = "triggerBody()?['IncidentArmId']"
+INCIDENT_ARM_ID_EXPR = f"@{INCIDENT_ARM_ID_EXPR_RAW}"
+
 TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;"
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;"
 
