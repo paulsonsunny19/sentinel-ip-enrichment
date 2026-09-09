@@ -28,7 +28,6 @@ from response_common import (
     TD,
     TH,
     after,
-    approval_gate_actions,
     base_outputs,
     base_parameters,
     http_call,
@@ -206,59 +205,31 @@ def build_definition():
                                 "runAfter": after("Condition_RevokeSessions"), "type": "If",
                                 "expression": {"equals": ["@parameters('ResetPassword')", True]},
                                 "actions": {
-                                    **approval_gate_actions(
-                                        "ResetPassword",
-                                        "concat('Approve password reset -- Incident #', "
-                                        "string(triggerBody()?['object']?['properties']?['incidentNumber']), "
-                                        "': ', outputs('Compose_User_Ref'))",
-                                        "ErgoSOC-AU response playbook is requesting approval to force a "
-                                        "password reset for this account. Mark this task Completed (Sentinel "
-                                        "Portal -> this incident -> Tasks tab) to approve. If it isn't marked "
-                                        "Completed within the timeout, the playbook proceeds without "
-                                        "resetting the password.",
-                                    ),
-                                    "Condition_ResetPassword_Approved": {
-                                        "runAfter": after("Until_ResetPasswordApproval"), "type": "If",
-                                        "expression": {"equals": ["@variables('ResetPasswordApprovalStatus')", "Completed"]},
-                                        "actions": {
-                                            "Compose_TempPassword": {
-                                                "runAfter": {}, "type": "Compose",
-                                                "inputs": (
-                                                    "@concat(toUpper(substring(guid(), 0, 6)), '#', "
-                                                    "toLower(substring(guid(), 0, 6)), string(rand(10, 99)))"
-                                                ),
+                                    "Compose_TempPassword": {
+                                        "runAfter": {}, "type": "Compose",
+                                        "inputs": (
+                                            "@concat(toUpper(substring(guid(), 0, 6)), '#', "
+                                            "toLower(substring(guid(), 0, 6)), string(rand(10, 99)))"
+                                        ),
+                                    },
+                                    "HTTP_ResetPassword": {
+                                        **http_call(
+                                            "@{concat('https://graph.microsoft.com/v1.0/users/', "
+                                            "uriComponent(outputs('Compose_Effective_Object_Id')))}",
+                                            method="PATCH", auth=GRAPH_AUTH,
+                                            body={
+                                                "passwordProfile": {
+                                                    "forceChangePasswordNextSignIn": True,
+                                                    "password": "@{outputs('Compose_TempPassword')}",
+                                                }
                                             },
-                                            "HTTP_ResetPassword": {
-                                                **http_call(
-                                                    "@{concat('https://graph.microsoft.com/v1.0/users/', "
-                                                    "uriComponent(outputs('Compose_Effective_Object_Id')))}",
-                                                    method="PATCH", auth=GRAPH_AUTH,
-                                                    body={
-                                                        "passwordProfile": {
-                                                            "forceChangePasswordNextSignIn": True,
-                                                            "password": "@{outputs('Compose_TempPassword')}",
-                                                        }
-                                                    },
-                                                ),
-                                                "runAfter": after("Compose_TempPassword"),
-                                            },
-                                            "Set_ResetResult": {
-                                                "runAfter": after("HTTP_ResetPassword", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
-                                                "type": "SetVariable",
-                                                "inputs": {"name": "ResetResult", "value": result_expr("HTTP_ResetPassword", [204])},
-                                            },
-                                        },
-                                        "else": {
-                                            "actions": {
-                                                "Set_ResetResult_NotApproved": {
-                                                    "runAfter": {}, "type": "SetVariable",
-                                                    "inputs": {
-                                                        "name": "ResetResult",
-                                                        "value": "@concat('not approved within timeout (task status: ', variables('ResetPasswordApprovalStatus'), ')')",
-                                                    },
-                                                },
-                                            },
-                                        },
+                                        ),
+                                        "runAfter": after("Compose_TempPassword"),
+                                    },
+                                    "Set_ResetResult": {
+                                        "runAfter": after("HTTP_ResetPassword", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                                        "type": "SetVariable",
+                                        "inputs": {"name": "ResetResult", "value": result_expr("HTTP_ResetPassword", [204])},
                                     },
                                 },
                                 "else": {"actions": {}},
@@ -336,13 +307,9 @@ def build_template(
             "runAfter": after("Init_ResetResult"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "ResolvedObjectId", "type": "string", "value": ""}]},
         },
-        "Init_ResetPasswordApprovalStatus": {
-            "runAfter": after("Init_ResolvedObjectId"), "type": "InitializeVariable",
-            "inputs": {"variables": [{"name": "ResetPasswordApprovalStatus", "type": "string", "value": "New"}]},
-        },
     }
     definition["actions"] = {**inits, **definition["actions"]}
-    definition["actions"]["Entities_-_Get_Accounts"]["runAfter"] = after("Init_ResetPasswordApprovalStatus")
+    definition["actions"]["Entities_-_Get_Accounts"]["runAfter"] = after("Init_ResolvedObjectId")
 
     template = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
