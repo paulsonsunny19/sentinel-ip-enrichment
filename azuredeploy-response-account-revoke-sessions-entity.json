@@ -175,7 +175,7 @@
                 ]
               },
               "type": "Compose",
-              "inputs": "@toLower(trim(string(coalesce(triggerBody()?['Entity']?['properties']?['UserPrincipalName'], triggerBody()?['Entity']?['properties']?['userPrincipalName'], if(and(not(equals(triggerBody()?['Entity']?['properties']?['AccountName'], null)), not(equals(triggerBody()?['Entity']?['properties']?['UPNSuffix'], null))), concat(triggerBody()?['Entity']?['properties']?['AccountName'], '@', triggerBody()?['Entity']?['properties']?['UPNSuffix']), if(and(not(equals(triggerBody()?['Entity']?['properties']?['Name'], null)), not(equals(triggerBody()?['Entity']?['properties']?['UPNSuffix'], null))), concat(triggerBody()?['Entity']?['properties']?['Name'], '@', triggerBody()?['Entity']?['properties']?['UPNSuffix']), ''), ''), ''))))"
+              "inputs": "@toLower(trim(string(coalesce(triggerBody()?['Entity']?['properties']?['UserPrincipalName'], triggerBody()?['Entity']?['properties']?['userPrincipalName'], if(and(not(equals(triggerBody()?['Entity']?['properties']?['AccountName'], null)), not(equals(triggerBody()?['Entity']?['properties']?['UPNSuffix'], null))), concat(triggerBody()?['Entity']?['properties']?['AccountName'], '@', triggerBody()?['Entity']?['properties']?['UPNSuffix']), if(and(not(equals(triggerBody()?['Entity']?['properties']?['Name'], null)), not(equals(triggerBody()?['Entity']?['properties']?['UPNSuffix'], null))), concat(triggerBody()?['Entity']?['properties']?['Name'], '@', triggerBody()?['Entity']?['properties']?['UPNSuffix']), '')), ''))))"
             },
             "Compose_Display_Name_Entity": {
               "runAfter": {

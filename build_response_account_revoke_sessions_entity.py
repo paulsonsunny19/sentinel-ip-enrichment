@@ -114,8 +114,7 @@ def build_definition():
                     # fallback rather than assumed primary, since 'AccountName' may also work.
                     f"if(and(not(equals({ENTITY_PROPERTY_EXPR_RAW}?['Name'], null)), "
                     f"not(equals({ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'], null))), "
-                    f"concat({ENTITY_PROPERTY_EXPR_RAW}?['Name'], '@', {ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix']), ''), "
-                    "''), "
+                    f"concat({ENTITY_PROPERTY_EXPR_RAW}?['Name'], '@', {ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix']), '')), "
                     "''))))"
                 ),
             },
