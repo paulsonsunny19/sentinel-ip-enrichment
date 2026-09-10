@@ -104,9 +104,22 @@ def entity_trigger(entity_type):
 # Field name/casing confirmed against the reference sample above:
 # "IncidentArmID" (capital ID), read off triggerBody() directly -- not
 # "IncidentArmId" as the live-build dynamic-content label alone had
-# suggested (labels are human-friendly, not literal field names). Empty
-# when the playbook was run without an associated incident (e.g. from
-# Hunting).
+# suggested (labels are human-friendly, not literal field names). Missing
+# entirely (not just an empty string) when the playbook was run without an
+# associated incident (e.g. from Hunting) -- confirmed against a real
+# deployment error: "Incident Arm id missing" from Incidents/Comment, even
+# though Condition_Has_Incident was meant to skip that call in exactly this
+# case.
+#
+# Wrapped in coalesce(..., '') deliberately: WDL's equals() treats null and
+# '' as NOT equal (equals(null, '') is false), so a bare
+# not(equals(triggerBody()?['IncidentArmID'], '')) reads a genuinely missing
+# field as "has an incident" (null != '' passes the not-equals-empty test),
+# and the flow proceeds to call Incidents/Comment with a null incidentArmId
+# -- which is the exact failure above. Coalescing to '' here, once, at the
+# source normalises "missing" and "empty" to the same value everywhere this
+# constant is used, so every equals/not-equals check downstream is correct
+# regardless of which of the two the trigger actually sends.
 #
 # Two forms, same expression: INCIDENT_ARM_ID_EXPR (with its leading '@')
 # for use as an entire top-level field value (e.g. "incidentArmId": ...,
@@ -114,7 +127,7 @@ def entity_trigger(entity_type):
 # string; INCIDENT_ARM_ID_EXPR_RAW (no leading '@') for embedding inside a
 # compound expression that's already inside its own '@{...}' wrapper or
 # its own leading '@' -- a nested '@' there is invalid WDL syntax.
-INCIDENT_ARM_ID_EXPR_RAW = "triggerBody()?['IncidentArmID']"
+INCIDENT_ARM_ID_EXPR_RAW = "coalesce(triggerBody()?['IncidentArmID'], '')"
 INCIDENT_ARM_ID_EXPR = f"@{INCIDENT_ARM_ID_EXPR_RAW}"
 
 # The entity itself, off the entity trigger's own triggerBody() -- no

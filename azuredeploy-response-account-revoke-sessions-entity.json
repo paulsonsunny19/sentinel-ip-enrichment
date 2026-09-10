@@ -363,7 +363,7 @@
               "expression": {
                 "not": {
                   "equals": [
-                    "@triggerBody()?['IncidentArmID']",
+                    "@coalesce(triggerBody()?['IncidentArmID'], '')",
                     ""
                   ]
                 }
@@ -380,7 +380,7 @@
                     },
                     "method": "post",
                     "body": {
-                      "incidentArmId": "@triggerBody()?['IncidentArmID']",
+                      "incidentArmId": "@coalesce(triggerBody()?['IncidentArmID'], '')",
                       "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>"
                     },
                     "path": "/Incidents/Comment"
@@ -457,7 +457,7 @@
                             },
                             {
                               "title": "Incident ARM ID",
-                              "value": "@{if(equals(triggerBody()?['IncidentArmID'], ''), '(none -- not run from an incident)', triggerBody()?['IncidentArmID'])}"
+                              "value": "@{if(equals(coalesce(triggerBody()?['IncidentArmID'], ''), ''), '(none -- not run from an incident)', coalesce(triggerBody()?['IncidentArmID'], ''))}"
                             }
                           ]
                         }
