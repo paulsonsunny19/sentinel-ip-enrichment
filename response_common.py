@@ -134,6 +134,126 @@ INCIDENT_ARM_ID_EXPR = f"@{INCIDENT_ARM_ID_EXPR_RAW}"
 # "Entities - Get <type>" action needed. See entity_trigger()'s comment.
 ENTITY_PROPERTY_EXPR_RAW = "triggerBody()?['Entity']?['properties']"
 
+
+def _if_expr(cond, true_val, false_val):
+    """Build a WDL if(cond, true, false) call from already-built sub-
+    expression strings, rather than hand-concatenating parentheses -- the
+    Session Revoke entity-trigger playbook shipped a real arity bug
+    (a stray trailing argument on a hand-built nested if()) precisely
+    because manual paren-counting is error-prone. Building it out of
+    named parts here means each if()'s three arguments are always
+    exactly its three function arguments, not something to count commas
+    for."""
+    return f"if({cond}, {true_val}, {false_val})"
+
+
+# Name of the last action in entity_account_resolve_actions()'s chain --
+# the effective (AadUserId-or-resolved) Entra object ID for the entity.
+# Chain whatever needs it (typically a Condition_Has_Object_Id) with
+# after(ENTITY_ACCOUNT_RESOLVE_LAST_ACTION).
+ENTITY_ACCOUNT_RESOLVE_LAST_ACTION = "Compose_Effective_Object_Id"
+
+
+def entity_account_resolve_actions(run_after_name):
+    """Shared action chain for every Account entity-trigger playbook:
+    reads AadUserId/UPN/display name directly off the entity trigger's
+    triggerBody() (no "Entities - Get Accounts" action, no Foreach -- see
+    entity_trigger()'s comment), resolves an Entra object ID from the UPN
+    via Graph when AadUserId itself wasn't present, and composes the
+    "effective" object ID any subsequent Graph write call should target.
+
+    Centralised here (rather than duplicated per playbook, as the
+    incident-trigger playbooks' equivalent Foreach-scoped version is)
+    because this exact logic already shipped two real bugs in its first
+    copy (a stray if() argument; a null-vs-empty-string comparison) --
+    one shared, fixed-once copy is safer than four hand-copied ones.
+
+    Returns the actions dict; chain a Condition_Has_Object_Id (or
+    whatever needs the resolved ID) with
+    after(ENTITY_ACCOUNT_RESOLVE_LAST_ACTION) afterwards."""
+    upn_cond_account = (
+        f"and(not(equals({ENTITY_PROPERTY_EXPR_RAW}?['AccountName'], null)), "
+        f"not(equals({ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'], null)))"
+    )
+    upn_concat_account = (
+        f"concat({ENTITY_PROPERTY_EXPR_RAW}?['AccountName'], '@', {ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'])"
+    )
+    # 'Name' confirmed as a real field on this trigger's account entity shape
+    # (differs from the incident trigger's 'AccountName') -- kept as a
+    # further fallback rather than assumed primary, since 'AccountName' may
+    # also work.
+    upn_cond_name = (
+        f"and(not(equals({ENTITY_PROPERTY_EXPR_RAW}?['Name'], null)), "
+        f"not(equals({ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'], null)))"
+    )
+    upn_concat_name = (
+        f"concat({ENTITY_PROPERTY_EXPR_RAW}?['Name'], '@', {ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'])"
+    )
+    upn_fallback = _if_expr(upn_cond_account, upn_concat_account, _if_expr(upn_cond_name, upn_concat_name, "''"))
+
+    return {
+        "Compose_AadUserId": {
+            "runAfter": after(run_after_name), "type": "Compose",
+            "inputs": (
+                f"@trim(string(coalesce({ENTITY_PROPERTY_EXPR_RAW}?['AadUserId'], "
+                f"{ENTITY_PROPERTY_EXPR_RAW}?['aadUserId'], "
+                f"{ENTITY_PROPERTY_EXPR_RAW}?['ObjectGuid'], "
+                f"{ENTITY_PROPERTY_EXPR_RAW}?['objectGuid'], '')))"
+            ),
+        },
+        "Compose_UPN": {
+            "runAfter": after("Compose_AadUserId"), "type": "Compose",
+            "inputs": (
+                f"@toLower(trim(string(coalesce({ENTITY_PROPERTY_EXPR_RAW}?['UserPrincipalName'], "
+                f"{ENTITY_PROPERTY_EXPR_RAW}?['userPrincipalName'], {upn_fallback}, ''))))"
+            ),
+        },
+        "Compose_Display_Name_Entity": {
+            "runAfter": after("Compose_UPN"), "type": "Compose",
+            "inputs": (
+                f"@trim(string(coalesce({ENTITY_PROPERTY_EXPR_RAW}?['DisplayName'], "
+                f"{ENTITY_PROPERTY_EXPR_RAW}?['displayName'], "
+                f"{ENTITY_PROPERTY_EXPR_RAW}?['Name'], '(no display name)')))"
+            ),
+        },
+        "Compose_User_Ref": {
+            "runAfter": after("Compose_Display_Name_Entity"), "type": "Compose",
+            "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), outputs('Compose_UPN'))",
+        },
+        "Condition_Resolve_ObjectId": {
+            "runAfter": after("Compose_User_Ref"), "type": "If",
+            "expression": {
+                "and": [
+                    {"equals": ["@outputs('Compose_AadUserId')", ""]},
+                    {"not": {"equals": ["@outputs('Compose_UPN')", ""]}},
+                ]
+            },
+            "actions": {
+                "HTTP_Resolve_User_Id": http_call(
+                    "@{concat('https://graph.microsoft.com/v1.0/users/', "
+                    "uriComponent(outputs('Compose_UPN')), '?$select=id')}",
+                    method="GET", auth=GRAPH_AUTH,
+                ),
+                "Set_ResolvedObjectId": {
+                    "runAfter": after("HTTP_Resolve_User_Id", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                    "type": "SetVariable",
+                    "inputs": {
+                        "name": "ResolvedObjectId",
+                        "value": (
+                            "@if(equals(outputs('HTTP_Resolve_User_Id')?['statusCode'], 200), "
+                            "string(coalesce(body('HTTP_Resolve_User_Id')?['id'], '')), '')"
+                        ),
+                    },
+                },
+            },
+            "else": {"actions": {}},
+        },
+        "Compose_Effective_Object_Id": {
+            "runAfter": after("Condition_Resolve_ObjectId"), "type": "Compose",
+            "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), variables('ResolvedObjectId'))",
+        },
+    }
+
 TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;"
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;"
 

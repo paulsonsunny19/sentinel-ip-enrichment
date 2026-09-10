@@ -1,0 +1,435 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Response: block an IP entity's indicator tenant-wide (entity trigger)",
+    "description": "Submits a tenant-wide block indicator via Defender for Endpoint's own indicators API for a single IP entity, run via Microsoft Sentinel's entity trigger (Preview) -- select the entity inside an incident's overview blade, then Actions -> Run playbook. IP half only -- entity triggers do not currently support URL entities; use azuredeploy-response-indicator-block.json (incident trigger) for URL blocking. Cannot be attached to a Sentinel automation rule (a platform limitation of entity-triggered playbooks, not a choice made here). Posts a comment back to the incident when run from one (Incident ARM ID is optional/empty when run without an associated incident, e.g. from Hunting). NOTE: the IP entity type string in the trigger path and the entity's address field name are this session's best-confidence guesses by analogy with the confirmed Account entity trigger, not independently verified -- see the module docstring.",
+    "prerequisites": "One existing user-assigned managed identity, granted the WindowsDefenderATP (not Microsoft Graph) application permission Ti.ReadWrite.All.",
+    "postDeployment": [
+      "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
+      "Grant the managed identity the Ti.ReadWrite.All application permission on the WindowsDefenderATP API (app ID fc780465-2017-40d4-a0c5-307022471b92 -- not Microsoft Graph) via an app-role assignment, then allow time for token propagation.",
+      "Authorise the Microsoft Sentinel API connection.",
+      "This playbook uses the entity trigger -- it will not appear as an option for Sentinel automation rules, and must be run manually by selecting an IP entity and choosing Run playbook.",
+      "Unverified: the entity type string in the trigger path and the entity's address field name are best-confidence guesses (see the module docstring) -- if the first run doesn't resolve an IP address, check the trigger's own Code view for the actual values and report back."
+    ],
+    "lastUpdateTime": "2026-09-10",
+    "entities": [
+      "IP"
+    ],
+    "tags": [
+      "Response",
+      "IP",
+      "Defender for Endpoint",
+      "Indicators",
+      "Entity Trigger"
+    ],
+    "support": {
+      "tier": "community"
+    }
+  },
+  "parameters": {
+    "PlaybookName": {
+      "type": "string",
+      "defaultValue": "ErgoSOC-AU-Indicator-Block-IP-EntityTrigger",
+      "metadata": {
+        "description": "Name of the Logic App playbook."
+      }
+    },
+    "UserAssignedManagedIdentityResourceId": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": {
+        "description": "Required. Full resource ID of the existing client-owned user-assigned managed identity used by the Logic App and the Microsoft Sentinel connection."
+      }
+    },
+    "TeamsWebhookUrl": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional. A Microsoft Teams channel's webhook URL, from that channel's Workflows app -> \"Send webhook alerts to a channel\". When set, this playbook also posts a short notification card (client, ticket number, playbook, incident owner, and what it did) to that channel after running. Leave blank (the default) to skip this -- it's a convenience notification only, not authenticated with the managed identity, and a delivery failure here is not reported back to the incident or retried."
+      }
+    },
+    "ClientOrganizationName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional. Shown at the top of the Teams notification card (only relevant if TeamsWebhookUrl is set) -- e.g. the client/tenant name, useful if one Teams channel receives alerts from more than one deployment. Leave blank to omit it from the card."
+      }
+    },
+    "Action": {
+      "type": "string",
+      "defaultValue": "Block",
+      "allowedValues": [
+        "Alert",
+        "Warn",
+        "Block",
+        "Audit",
+        "BlockAndRemediate",
+        "AlertAndBlock",
+        "Allowed"
+      ],
+      "metadata": {
+        "description": "Defender for Endpoint indicator action. Block prevents access with no alert; AlertAndBlock also raises a Defender alert."
+      }
+    },
+    "IndicatorExpirationDays": {
+      "type": "int",
+      "defaultValue": 180,
+      "minValue": 0,
+      "maxValue": 365,
+      "metadata": {
+        "description": "How many days out from submission the block indicator expires. Set to 0 for effectively never (submits a 2099 expiration)."
+      }
+    }
+  },
+  "variables": {
+    "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('SentinelConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "V1",
+      "properties": {
+        "displayName": "[variables('SentinelConnectionName')]",
+        "customParameterValues": {},
+        "parameterValueType": "Alternative",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[parameters('PlaybookName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('UserAssignedManagedIdentityResourceId')]": {}
+        }
+      },
+      "tags": {
+        "hidden-SentinelTemplateName": "ErgoSOC-AU-Indicator-Block-IP-EntityTrigger",
+        "hidden-SentinelTemplateVersion": "1.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "$connections": {
+              "defaultValue": {},
+              "type": "Object"
+            },
+            "Action": {
+              "type": "String",
+              "defaultValue": "Block"
+            },
+            "IndicatorExpirationDays": {
+              "type": "Int",
+              "defaultValue": 180
+            },
+            "TeamsWebhookUrl": {
+              "type": "SecureString",
+              "defaultValue": ""
+            },
+            "ClientOrganizationName": {
+              "type": "String",
+              "defaultValue": ""
+            }
+          },
+          "triggers": {
+            "Microsoft_Sentinel_entity": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "path": "/entity/@{encodeURIComponent('IP')}"
+              }
+            }
+          },
+          "actions": {
+            "Init_IpBlockResult": {
+              "runAfter": {},
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "IpBlockResult",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              }
+            },
+            "Compose_Ip_Address": {
+              "runAfter": {
+                "Init_IpBlockResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@trim(string(coalesce(triggerBody()?['Entity']?['properties']?['Address'], triggerBody()?['Entity']?['properties']?['address'], '')))"
+            },
+            "HTTP_SubmitIpIndicator": {
+              "runAfter": {
+                "Compose_Ip_Address": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "method": "POST",
+                "uri": "https://api.security.microsoft.com/api/indicators",
+                "headers": {
+                  "Accept": "application/json",
+                  "Content-Type": "application/json"
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[parameters('UserAssignedManagedIdentityResourceId')]",
+                  "audience": "https://api.securitycenter.microsoft.com"
+                },
+                "body": {
+                  "indicatorValue": "@{outputs('Compose_Ip_Address')}",
+                  "indicatorType": "IpAddress",
+                  "action": "@{parameters('Action')}",
+                  "title": "@{concat('ErgoSOC-AU block (entity trigger): ', outputs('Compose_Ip_Address'))}",
+                  "description": "Blocked by ErgoSOC-AU response playbook (manual analyst run, entity trigger) via Microsoft Sentinel.",
+                  "severity": "High",
+                  "expirationTime": "@{if(equals(parameters('IndicatorExpirationDays'), 0), '2099-12-31T00:00:00Z', addDays(utcNow(), parameters('IndicatorExpirationDays')))}"
+                }
+              },
+              "runtimeConfiguration": {
+                "secureData": {
+                  "properties": [
+                    "inputs"
+                  ]
+                }
+              }
+            },
+            "Set_IpBlockResult": {
+              "runAfter": {
+                "HTTP_SubmitIpIndicator": [
+                  "Succeeded",
+                  "Failed",
+                  "Skipped",
+                  "TimedOut"
+                ]
+              },
+              "type": "SetVariable",
+              "inputs": {
+                "name": "IpBlockResult",
+                "value": "@if(or(equals(outputs('HTTP_SubmitIpIndicator')?['statusCode'], 200)), 'OK', concat('FAILED (HTTP ', string(outputs('HTTP_SubmitIpIndicator')?['statusCode']), ') - ', string(coalesce(outputs('HTTP_SubmitIpIndicator')?['body']?['error']?['message'], string(outputs('HTTP_SubmitIpIndicator')?['body']), 'no error detail returned'))))"
+              }
+            },
+            "Compose_Entity_Comment": {
+              "runAfter": {
+                "Set_IpBlockResult": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; block IP indicator &middot; entity trigger &middot; run @{utcNow()} UTC</div><table style='border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%'><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>IP address</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{outputs('Compose_Ip_Address')}</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Approval</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">manual playbook run by an analyst (entity trigger)</td></tr><tr><th style='text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;'>Block indicator (Defender for Endpoint)</th><td style='padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;' colspan=\"3\">@{variables('IpBlockResult')}</td></tr></table>"
+            },
+            "Compose_Entity_Comment_Safe": {
+              "runAfter": {
+                "Compose_Entity_Comment": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), '<p><i>... output truncated at 28,000 characters to stay under Sentinel''s 30,000-character comment limit; see the Logic App run history for the full result.</i></p>'), outputs('Compose_Entity_Comment'))"
+            },
+            "Condition_Has_Incident": {
+              "runAfter": {
+                "Compose_Entity_Comment_Safe": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "not": {
+                  "equals": [
+                    "@coalesce(triggerBody()?['IncidentArmID'], '')",
+                    ""
+                  ]
+                }
+              },
+              "actions": {
+                "Add_comment_to_incident_V3": {
+                  "runAfter": {},
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "body": {
+                      "incidentArmId": "@coalesce(triggerBody()?['IncidentArmID'], '')",
+                      "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>"
+                    },
+                    "path": "/Incidents/Comment"
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            },
+            "Condition_TeamsNotify": {
+              "runAfter": {
+                "Condition_Has_Incident": [
+                  "Succeeded"
+                ]
+              },
+              "type": "If",
+              "expression": {
+                "not": {
+                  "equals": [
+                    "@parameters('TeamsWebhookUrl')",
+                    ""
+                  ]
+                }
+              },
+              "actions": {
+                "HTTP_TeamsNotify": {
+                  "runAfter": {},
+                  "type": "Http",
+                  "inputs": {
+                    "method": "POST",
+                    "uri": "@{parameters('TeamsWebhookUrl')}",
+                    "headers": {
+                      "Accept": "application/json",
+                      "Content-Type": "application/json"
+                    },
+                    "body": {
+                      "type": "AdaptiveCard",
+                      "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                      "version": "1.4",
+                      "body": [
+                        {
+                          "type": "Container",
+                          "items": [
+                            {
+                              "type": "TextBlock",
+                              "text": "\ud83d\udee1\ufe0f ErgoSOC-AU response playbook run (entity trigger)",
+                              "weight": "Bolder",
+                              "size": "Medium",
+                              "wrap": true
+                            },
+                            {
+                              "type": "TextBlock",
+                              "text": "@{if(equals(parameters('ClientOrganizationName'), ''), 'Client: (not set)', concat('Client: ', parameters('ClientOrganizationName')))}",
+                              "isSubtle": true,
+                              "wrap": true
+                            }
+                          ]
+                        },
+                        {
+                          "type": "FactSet",
+                          "facts": [
+                            {
+                              "title": "Playbook",
+                              "value": "@{workflow().name}"
+                            },
+                            {
+                              "title": "IP address",
+                              "value": "@{outputs('Compose_Ip_Address')}"
+                            },
+                            {
+                              "title": "Block",
+                              "value": "@{variables('IpBlockResult')}"
+                            },
+                            {
+                              "title": "Incident ARM ID",
+                              "value": "@{if(equals(coalesce(triggerBody()?['IncidentArmID'], ''), ''), '(none -- not run from an incident)', coalesce(triggerBody()?['IncidentArmID'], ''))}"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "runtimeConfiguration": {
+                    "secureData": {
+                      "properties": [
+                        "inputs"
+                      ]
+                    }
+                  }
+                }
+              },
+              "else": {
+                "actions": {}
+              }
+            }
+          },
+          "outputs": {}
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azuresentinel": {
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('SentinelConnectionName'))]",
+                "connectionName": "[variables('SentinelConnectionName')]",
+                "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuresentinel')]",
+                "connectionProperties": {
+                  "authentication": {
+                    "type": "ManagedServiceIdentity",
+                    "identity": "[parameters('UserAssignedManagedIdentityResourceId')]"
+                  }
+                }
+              }
+            }
+          },
+          "Action": {
+            "value": "[parameters('Action')]"
+          },
+          "IndicatorExpirationDays": {
+            "value": "[parameters('IndicatorExpirationDays')]"
+          },
+          "TeamsWebhookUrl": {
+            "value": "[parameters('TeamsWebhookUrl')]"
+          },
+          "ClientOrganizationName": {
+            "value": "[parameters('ClientOrganizationName')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "PlaybookResourceId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', parameters('PlaybookName'))]"
+    },
+    "ManagedIdentityType": {
+      "type": "string",
+      "value": "UserAssigned"
+    },
+    "ManagedIdentityResourceId": {
+      "type": "string",
+      "value": "[parameters('UserAssignedManagedIdentityResourceId')]"
+    },
+    "ManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(parameters('UserAssignedManagedIdentityResourceId'), '2018-11-30').principalId]"
+    }
+  }
+}

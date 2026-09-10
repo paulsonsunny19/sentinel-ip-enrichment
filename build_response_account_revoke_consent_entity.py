@@ -1,43 +1,33 @@
 #!/usr/bin/env python3
-"""Generates azuredeploy-response-account-revoke-sessions-entity.json.
+"""Generates azuredeploy-response-account-revoke-consent-entity.json.
 
-Same action as ErgoSOC-AU-Account-RevokeSessions (azuredeploy-response-
-account-revoke-sessions.json), but on Microsoft Sentinel's "entity" trigger
-(Preview) instead of the incident trigger every other playbook in this repo
-uses. Run manually by selecting a single Account entity inside an incident's
-overview blade -- Actions -> Run playbook -- rather than from the incident's
-own Actions menu. See response_common.py's entity_trigger()/
-INCIDENT_ARM_ID_EXPR/ENTITY_PROPERTY_EXPR_RAW comments for exactly what's
-been verified about this trigger (now confirmed against a complete reference
-sample, not just a live partial build -- see that module for the full
-history of what changed and why).
+Same action as ErgoSOC-AU-Account-RevokeAppConsent (azuredeploy-response-
+account-revoke-consent.json), but on Microsoft Sentinel's "entity" trigger
+(Preview) instead of the incident trigger. Run manually by selecting a
+single Account entity inside an incident's overview blade -- Actions ->
+Run playbook.
 
-No "Entities - Get Accounts" action and no Foreach loop here, unlike the
-first cut of this file: an entity trigger fires for exactly one entity, and
-that entity's data is read directly off
-triggerBody()?['Entity']?['properties']?[...] -- confirmed against a
-complete reference sample playbook. The earlier version's
-"Entities - Get Accounts" action turned out to need a required "Entities
-list" input with no supplied value, which is why it never actually worked
-when deployed and run.
+Built on the same, now-confirmed entity-trigger pattern as
+build_response_account_revoke_sessions_entity.py -- see that file's and
+response_common.py's comments for what's verified about the trigger
+itself. The account-entity resolve chain (AadUserId/UPN/display name,
+Graph object-ID lookup) is shared via
+response_common.entity_account_resolve_actions() rather than duplicated
+here.
 
-Real platform limitation, not a choice made here: entity-triggered playbooks
-CANNOT be called by a Sentinel automation rule (different trigger schema).
-Irrelevant for this repo's response playbooks specifically, since none of
-them are wired to automation rules anyway -- see README-RESPONSE.md.
+The For_each_Grant loop below is unrelated to the entity-trigger/Foreach
+distinction that changed elsewhere in this file's siblings -- it loops
+over the *account's OAuth grants* (an API response), not over Sentinel
+entities, so it stays exactly as it is in the incident-trigger version.
 
-The Teams notification card here still omits Ticket/Severity/Incident
-owner (unlike the incident-trigger version's shared teams_notify_actions()
-helper): those fields live under triggerBody()?['object']?['properties']?[...]
-on the incident trigger, which the entity trigger's triggerBody() does not
-carry -- getting them here would need an extra "get incident" API call this
-playbook doesn't make. The card instead shows the playbook name, the
-account acted on, the result, and the Incident ARM ID (blank when run
-without an incident, e.g. from Hunting).
+This revokes the user's own (delegated) consent grants only -- it does
+not touch tenant-wide admin consent grants or the app's own app-role
+assignments. If the malicious app was admin-consented at the tenant
+level, that needs a separate, deliberate tenant-admin action, which this
+playbook does not attempt.
 
-Requires the same Microsoft Graph application permission as the incident-
-trigger version: User.ReadWrite.All (covers revokeSignInSessions) on the
-UAMI, plus Microsoft Sentinel Responder for the connector itself.
+Requires Microsoft Graph application permission
+DelegatedPermissionGrant.ReadWrite.All on the UAMI.
 """
 import pathlib
 
@@ -55,7 +45,6 @@ from response_common import (
     entity_account_resolve_actions,
     entity_trigger,
     http_call,
-    result_expr,
     sentinel_connection_resource,
     workflow_resource,
     write_template,
@@ -65,8 +54,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 HEADER = (
     "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;"
-    "margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; account containment "
-    "(revoke sessions) &middot; entity trigger &middot; run @{utcNow()} UTC</div>"
+    "margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; revoke OAuth app consent "
+    "&middot; entity trigger &middot; run @{utcNow()} UTC</div>"
 )
 
 ACCOUNT_ROW = (
@@ -76,8 +65,12 @@ ACCOUNT_ROW = (
     f"<tr><th style='{TH}'>Resolved Entra object ID</th><td style='{TD}'>"
     f"@{{if(equals(outputs('Compose_Effective_Object_Id'), ''), 'NOT RESOLVED -- no action taken', outputs('Compose_Effective_Object_Id'))}}</td>"
     f"<th style='{TH}'>Approval</th><td style='{TD}'>manual playbook run by an analyst (entity trigger)</td></tr>"
-    f"<tr><th style='{TH}'>Revoke sign-in sessions</th><td style='{TD}' colspan=\"3\">@{{variables('RevokeResult')}}</td></tr>"
+    f"<tr><th style='{TH}'>Delegated permission grants</th><td style='{TD}' colspan=\"3\">@{{variables('GrantsSummary')}}</td></tr>"
     f"</table>"
+    f"<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:11px;color:#605e5c;margin-top:6px\">"
+    f"Revokes the user's own consent grants only. If a malicious app was admin-consented tenant-wide, "
+    f"removing its service principal or app-role assignments is a separate, deliberate admin action this "
+    f"playbook does not perform.</div>"
 )
 
 
@@ -97,21 +90,66 @@ def build_definition():
                 "runAfter": after(ENTITY_ACCOUNT_RESOLVE_LAST_ACTION), "type": "If",
                 "expression": {"not": {"equals": ["@outputs('Compose_Effective_Object_Id')", ""]}},
                 "actions": {
-                    "HTTP_RevokeSessions": http_call(
+                    "HTTP_List_Grants": http_call(
                         "@{concat('https://graph.microsoft.com/v1.0/users/', "
-                        "uriComponent(outputs('Compose_Effective_Object_Id')), '/revokeSignInSessions')}",
-                        method="POST", auth=GRAPH_AUTH, body={},
+                        "uriComponent(outputs('Compose_Effective_Object_Id')), '/oauth2PermissionGrants')}",
+                        method="GET", auth=GRAPH_AUTH,
                     ),
-                    "Set_RevokeResult": {
-                        "runAfter": after("HTTP_RevokeSessions", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
-                        "type": "SetVariable",
-                        "inputs": {"name": "RevokeResult", "value": result_expr("HTTP_RevokeSessions", [200])},
+                    "For_each_Grant": {
+                        "foreach": "@coalesce(body('HTTP_List_Grants')?['value'], json('[]'))",
+                        "runAfter": after("HTTP_List_Grants"),
+                        "type": "Foreach",
+                        "runtimeConfiguration": {"concurrency": {"repetitions": 1}},
+                        "actions": {
+                            "HTTP_Delete_Grant": http_call(
+                                "@{concat('https://graph.microsoft.com/v1.0/oauth2PermissionGrants/', "
+                                "items('For_each_Grant')?['id'])}",
+                                method="DELETE", auth=GRAPH_AUTH,
+                            ),
+                            "Condition_Delete_Succeeded": {
+                                "runAfter": after("HTTP_Delete_Grant", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                                "type": "If",
+                                "expression": {"equals": ["@outputs('HTTP_Delete_Grant')?['statusCode']", 204]},
+                                "actions": {
+                                    "Increment_RevokedCount": {
+                                        "runAfter": {}, "type": "IncrementVariable",
+                                        "inputs": {"name": "RevokedCount", "value": 1},
+                                    },
+                                },
+                                "else": {
+                                    "actions": {
+                                        "Increment_FailedCount": {
+                                            "runAfter": {}, "type": "IncrementVariable",
+                                            "inputs": {"name": "FailedCount", "value": 1},
+                                        },
+                                    }
+                                },
+                            },
+                        },
                     },
                 },
                 "else": {"actions": {}},
             },
-            "Compose_Entity_Comment": {
+            "Compose_GrantsSummary": {
                 "runAfter": after("Condition_Has_Object_Id"), "type": "Compose",
+                "inputs": (
+                    "@if(equals(outputs('Compose_Effective_Object_Id'), ''), "
+                    "'not attempted - no Entra object ID resolved', "
+                    "if(equals(add(variables('RevokedCount'), variables('FailedCount')), 0), "
+                    "'no delegated permission grants found for this user', "
+                    "concat('revoked ', string(variables('RevokedCount')), ' of ', "
+                    "string(add(variables('RevokedCount'), variables('FailedCount'))), "
+                    "' delegated permission grants', "
+                    "if(greater(variables('FailedCount'), 0), "
+                    "concat(' (', string(variables('FailedCount')), ' failed to revoke -- check run history)'), ''))))"
+                ),
+            },
+            "Set_GrantsSummary": {
+                "runAfter": after("Compose_GrantsSummary"), "type": "SetVariable",
+                "inputs": {"name": "GrantsSummary", "value": "@outputs('Compose_GrantsSummary')"},
+            },
+            "Compose_Entity_Comment": {
+                "runAfter": after("Set_GrantsSummary"), "type": "Compose",
                 "inputs": HEADER + ACCOUNT_ROW,
             },
             "Compose_Entity_Comment_Safe": {
@@ -176,7 +214,7 @@ def build_definition():
                                     "facts": [
                                         {"title": "Playbook", "value": "@{workflow().name}"},
                                         {"title": "Account", "value": "@{outputs('Compose_User_Ref')}"},
-                                        {"title": "Revoke sessions", "value": "@{variables('RevokeResult')}"},
+                                        {"title": "OAuth grants", "value": "@{variables('GrantsSummary')}"},
                                         {"title": "Incident ARM ID", "value": f"@{{if(equals({INCIDENT_ARM_ID_EXPR_RAW}, ''), '(none -- not run from an incident)', {INCIDENT_ARM_ID_EXPR_RAW})}}"},
                                     ],
                                 },
@@ -194,12 +232,20 @@ def build_definition():
 def build_template():
     definition = build_definition()
     inits = {
-        "Init_RevokeResult": {
+        "Init_RevokedCount": {
             "runAfter": {}, "type": "InitializeVariable",
-            "inputs": {"variables": [{"name": "RevokeResult", "type": "string", "value": ""}]},
+            "inputs": {"variables": [{"name": "RevokedCount", "type": "integer", "value": 0}]},
+        },
+        "Init_FailedCount": {
+            "runAfter": after("Init_RevokedCount"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "FailedCount", "type": "integer", "value": 0}]},
+        },
+        "Init_GrantsSummary": {
+            "runAfter": after("Init_FailedCount"), "type": "InitializeVariable",
+            "inputs": {"variables": [{"name": "GrantsSummary", "type": "string", "value": ""}]},
         },
         "Init_ResolvedObjectId": {
-            "runAfter": after("Init_RevokeResult"), "type": "InitializeVariable",
+            "runAfter": after("Init_GrantsSummary"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "ResolvedObjectId", "type": "string", "value": ""}]},
         },
     }
@@ -209,21 +255,21 @@ def build_template():
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
         "contentVersion": "1.0.0.0",
         "metadata": {
-            "title": "Response: revoke sign-in sessions for an Account entity (entity trigger)",
-            "description": "Revokes all active sign-in sessions for a single Account entity, run via Microsoft Sentinel's entity trigger (Preview) -- select the entity inside an incident's overview blade, then Actions -> Run playbook. Cannot be attached to a Sentinel automation rule (a platform limitation of entity-triggered playbooks, not a choice made here). Posts a comment back to the incident when run from one (Incident ARM ID is optional/empty when run without an associated incident, e.g. from Hunting).",
-            "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission User.ReadWrite.All and Microsoft Sentinel Responder on the resource group holding the workspace.",
+            "title": "Response: revoke OAuth app consent for an Account entity (entity trigger)",
+            "description": "Lists and revokes every delegated OAuth2 permission grant a single Account entity has consented to, run via Microsoft Sentinel's entity trigger (Preview) -- select the entity inside an incident's overview blade, then Actions -> Run playbook. Does not touch tenant-wide admin consent grants. Cannot be attached to a Sentinel automation rule (a platform limitation of entity-triggered playbooks, not a choice made here). Posts a comment back to the incident when run from one (Incident ARM ID is optional/empty when run without an associated incident, e.g. from Hunting).",
+            "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission DelegatedPermissionGrant.ReadWrite.All.",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
-                "Grant the managed identity the User.ReadWrite.All Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
+                "Grant the managed identity the DelegatedPermissionGrant.ReadWrite.All Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
                 "Authorise the Microsoft Sentinel API connection.",
                 "This playbook uses the entity trigger -- it will not appear as an option for Sentinel automation rules, and must be run manually by selecting an Account entity and choosing Run playbook.",
             ],
             "lastUpdateTime": "2026-09-10",
             "entities": ["Account"],
-            "tags": ["Response", "Account", "Entra ID", "Containment", "Entity Trigger"],
+            "tags": ["Response", "Account", "Entra ID", "OAuth Consent", "Containment", "Entity Trigger"],
             "support": {"tier": "community"},
         },
-        "parameters": base_parameters("ErgoSOC-AU-Account-RevokeSessions-EntityTrigger"),
+        "parameters": base_parameters("ErgoSOC-AU-Account-RevokeAppConsent-EntityTrigger"),
         "variables": {
             "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
         },
@@ -231,7 +277,7 @@ def build_template():
             sentinel_connection_resource(),
             workflow_resource(
                 definition,
-                "ErgoSOC-AU-Account-RevokeSessions-EntityTrigger",
+                "ErgoSOC-AU-Account-RevokeAppConsent-EntityTrigger",
                 extra_deploy_parameters={
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
                     "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
@@ -244,4 +290,4 @@ def build_template():
 
 
 if __name__ == "__main__":
-    write_template(build_template(), "azuredeploy-response-account-revoke-sessions-entity.json", HERE)
+    write_template(build_template(), "azuredeploy-response-account-revoke-consent-entity.json", HERE)

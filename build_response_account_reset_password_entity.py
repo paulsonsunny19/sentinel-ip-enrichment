@@ -1,43 +1,32 @@
 #!/usr/bin/env python3
-"""Generates azuredeploy-response-account-revoke-sessions-entity.json.
+"""Generates azuredeploy-response-account-reset-password-entity.json.
 
-Same action as ErgoSOC-AU-Account-RevokeSessions (azuredeploy-response-
-account-revoke-sessions.json), but on Microsoft Sentinel's "entity" trigger
-(Preview) instead of the incident trigger every other playbook in this repo
-uses. Run manually by selecting a single Account entity inside an incident's
-overview blade -- Actions -> Run playbook -- rather than from the incident's
-own Actions menu. See response_common.py's entity_trigger()/
-INCIDENT_ARM_ID_EXPR/ENTITY_PROPERTY_EXPR_RAW comments for exactly what's
-been verified about this trigger (now confirmed against a complete reference
-sample, not just a live partial build -- see that module for the full
-history of what changed and why).
+Same action as ErgoSOC-AU-Account-ResetPassword (azuredeploy-response-
+account-reset-password.json), but on Microsoft Sentinel's "entity" trigger
+(Preview) instead of the incident trigger. Run manually by selecting a
+single Account entity inside an incident's overview blade -- Actions ->
+Run playbook.
 
-No "Entities - Get Accounts" action and no Foreach loop here, unlike the
-first cut of this file: an entity trigger fires for exactly one entity, and
-that entity's data is read directly off
-triggerBody()?['Entity']?['properties']?[...] -- confirmed against a
-complete reference sample playbook. The earlier version's
-"Entities - Get Accounts" action turned out to need a required "Entities
-list" input with no supplied value, which is why it never actually worked
-when deployed and run.
+Built on the same, now-confirmed entity-trigger pattern as
+build_response_account_revoke_sessions_entity.py -- see that file's and
+response_common.py's comments for what's verified about the trigger
+itself. The account-entity resolve chain (AadUserId/UPN/display name,
+Graph object-ID lookup) is shared via
+response_common.entity_account_resolve_actions() rather than duplicated
+here, since that logic shipped two real bugs the first time it was
+hand-copied.
 
-Real platform limitation, not a choice made here: entity-triggered playbooks
-CANNOT be called by a Sentinel automation rule (different trigger schema).
-Irrelevant for this repo's response playbooks specifically, since none of
-them are wired to automation rules anyway -- see README-RESPONSE.md.
+The generated temporary password is never logged, echoed to the incident
+comment, or returned in any output -- only whether the reset succeeded.
+This is a containment lockout: the user cannot sign in again until your
+helpdesk issues them a new password through your normal verified channel.
 
-The Teams notification card here still omits Ticket/Severity/Incident
-owner (unlike the incident-trigger version's shared teams_notify_actions()
-helper): those fields live under triggerBody()?['object']?['properties']?[...]
-on the incident trigger, which the entity trigger's triggerBody() does not
-carry -- getting them here would need an extra "get incident" API call this
-playbook doesn't make. The card instead shows the playbook name, the
-account acted on, the result, and the Incident ARM ID (blank when run
-without an incident, e.g. from Hunting).
-
-Requires the same Microsoft Graph application permission as the incident-
-trigger version: User.ReadWrite.All (covers revokeSignInSessions) on the
-UAMI, plus Microsoft Sentinel Responder for the connector itself.
+Requires Microsoft Graph application permission User.ReadWrite.All on the
+UAMI. Also requires the UAMI itself be assigned an Entra ID directory
+role (User Administrator, or Privileged Authentication Administrator if
+the target may be an admin/privileged account) -- Graph permission alone
+is not sufficient for a passwordProfile write; see this session's own
+research on that requirement if you need the detail again.
 """
 import pathlib
 
@@ -65,8 +54,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 HEADER = (
     "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#605e5c;"
-    "margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; account containment "
-    "(revoke sessions) &middot; entity trigger &middot; run @{utcNow()} UTC</div>"
+    "margin-bottom:10px\">ErgoSOC-AU response playbook &mdash; reset password "
+    "&middot; entity trigger &middot; run @{utcNow()} UTC</div>"
 )
 
 ACCOUNT_ROW = (
@@ -76,7 +65,8 @@ ACCOUNT_ROW = (
     f"<tr><th style='{TH}'>Resolved Entra object ID</th><td style='{TD}'>"
     f"@{{if(equals(outputs('Compose_Effective_Object_Id'), ''), 'NOT RESOLVED -- no action taken', outputs('Compose_Effective_Object_Id'))}}</td>"
     f"<th style='{TH}'>Approval</th><td style='{TD}'>manual playbook run by an analyst (entity trigger)</td></tr>"
-    f"<tr><th style='{TH}'>Revoke sign-in sessions</th><td style='{TD}' colspan=\"3\">@{{variables('RevokeResult')}}</td></tr>"
+    f"<tr><th style='{TH}'>Force password reset</th><td style='{TD}' colspan=\"3\">@{{variables('ResetResult')}}"
+    f" <i>(new password not shown here -- issue via your normal channel)</i></td></tr>"
     f"</table>"
 )
 
@@ -97,15 +87,31 @@ def build_definition():
                 "runAfter": after(ENTITY_ACCOUNT_RESOLVE_LAST_ACTION), "type": "If",
                 "expression": {"not": {"equals": ["@outputs('Compose_Effective_Object_Id')", ""]}},
                 "actions": {
-                    "HTTP_RevokeSessions": http_call(
-                        "@{concat('https://graph.microsoft.com/v1.0/users/', "
-                        "uriComponent(outputs('Compose_Effective_Object_Id')), '/revokeSignInSessions')}",
-                        method="POST", auth=GRAPH_AUTH, body={},
-                    ),
-                    "Set_RevokeResult": {
-                        "runAfter": after("HTTP_RevokeSessions", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                    "Compose_TempPassword": {
+                        "runAfter": {}, "type": "Compose",
+                        "inputs": (
+                            "@concat(toUpper(substring(guid(), 0, 6)), '#', "
+                            "toLower(substring(guid(), 0, 6)), string(rand(10, 99)))"
+                        ),
+                    },
+                    "HTTP_ResetPassword": {
+                        **http_call(
+                            "@{concat('https://graph.microsoft.com/v1.0/users/', "
+                            "uriComponent(outputs('Compose_Effective_Object_Id')))}",
+                            method="PATCH", auth=GRAPH_AUTH,
+                            body={
+                                "passwordProfile": {
+                                    "forceChangePasswordNextSignIn": True,
+                                    "password": "@{outputs('Compose_TempPassword')}",
+                                }
+                            },
+                        ),
+                        "runAfter": after("Compose_TempPassword"),
+                    },
+                    "Set_ResetResult": {
+                        "runAfter": after("HTTP_ResetPassword", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
                         "type": "SetVariable",
-                        "inputs": {"name": "RevokeResult", "value": result_expr("HTTP_RevokeSessions", [200])},
+                        "inputs": {"name": "ResetResult", "value": result_expr("HTTP_ResetPassword", [204])},
                     },
                 },
                 "else": {"actions": {}},
@@ -176,7 +182,7 @@ def build_definition():
                                     "facts": [
                                         {"title": "Playbook", "value": "@{workflow().name}"},
                                         {"title": "Account", "value": "@{outputs('Compose_User_Ref')}"},
-                                        {"title": "Revoke sessions", "value": "@{variables('RevokeResult')}"},
+                                        {"title": "Reset password", "value": "@{variables('ResetResult')}"},
                                         {"title": "Incident ARM ID", "value": f"@{{if(equals({INCIDENT_ARM_ID_EXPR_RAW}, ''), '(none -- not run from an incident)', {INCIDENT_ARM_ID_EXPR_RAW})}}"},
                                     ],
                                 },
@@ -194,12 +200,12 @@ def build_definition():
 def build_template():
     definition = build_definition()
     inits = {
-        "Init_RevokeResult": {
+        "Init_ResetResult": {
             "runAfter": {}, "type": "InitializeVariable",
-            "inputs": {"variables": [{"name": "RevokeResult", "type": "string", "value": ""}]},
+            "inputs": {"variables": [{"name": "ResetResult", "type": "string", "value": ""}]},
         },
         "Init_ResolvedObjectId": {
-            "runAfter": after("Init_RevokeResult"), "type": "InitializeVariable",
+            "runAfter": after("Init_ResetResult"), "type": "InitializeVariable",
             "inputs": {"variables": [{"name": "ResolvedObjectId", "type": "string", "value": ""}]},
         },
     }
@@ -209,12 +215,13 @@ def build_template():
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
         "contentVersion": "1.0.0.0",
         "metadata": {
-            "title": "Response: revoke sign-in sessions for an Account entity (entity trigger)",
-            "description": "Revokes all active sign-in sessions for a single Account entity, run via Microsoft Sentinel's entity trigger (Preview) -- select the entity inside an incident's overview blade, then Actions -> Run playbook. Cannot be attached to a Sentinel automation rule (a platform limitation of entity-triggered playbooks, not a choice made here). Posts a comment back to the incident when run from one (Incident ARM ID is optional/empty when run without an associated incident, e.g. from Hunting).",
-            "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission User.ReadWrite.All and Microsoft Sentinel Responder on the resource group holding the workspace.",
+            "title": "Response: reset password for an Account entity (entity trigger)",
+            "description": "Forces a password reset (temporary password never logged or displayed) for a single Account entity, run via Microsoft Sentinel's entity trigger (Preview) -- select the entity inside an incident's overview blade, then Actions -> Run playbook. Cannot be attached to a Sentinel automation rule (a platform limitation of entity-triggered playbooks, not a choice made here). Posts a comment back to the incident when run from one (Incident ARM ID is optional/empty when run without an associated incident, e.g. from Hunting).",
+            "prerequisites": "One existing user-assigned managed identity, granted the Microsoft Graph application permission User.ReadWrite.All, an Entra ID directory role sufficient to reset the target's password (User Administrator, or Privileged Authentication Administrator if the target may be an admin account), and Microsoft Sentinel Responder on the resource group holding the workspace.",
             "postDeployment": [
                 "Grant the user-assigned managed identity Microsoft Sentinel Responder on the resource group holding the workspace.",
                 "Grant the managed identity the User.ReadWrite.All Microsoft Graph application permission via an app-role assignment, then allow time for token propagation.",
+                "Assign the managed identity an Entra ID directory role that can reset the target account's password -- User Administrator for regular users, Privileged Authentication Administrator if the target may be an admin/privileged account (the Graph permission alone is not sufficient for a passwordProfile write).",
                 "Authorise the Microsoft Sentinel API connection.",
                 "This playbook uses the entity trigger -- it will not appear as an option for Sentinel automation rules, and must be run manually by selecting an Account entity and choosing Run playbook.",
             ],
@@ -223,7 +230,7 @@ def build_template():
             "tags": ["Response", "Account", "Entra ID", "Containment", "Entity Trigger"],
             "support": {"tier": "community"},
         },
-        "parameters": base_parameters("ErgoSOC-AU-Account-RevokeSessions-EntityTrigger"),
+        "parameters": base_parameters("ErgoSOC-AU-Account-ResetPassword-EntityTrigger"),
         "variables": {
             "SentinelConnectionName": "[concat('MicrosoftSentinel-', parameters('PlaybookName'))]",
         },
@@ -231,7 +238,7 @@ def build_template():
             sentinel_connection_resource(),
             workflow_resource(
                 definition,
-                "ErgoSOC-AU-Account-RevokeSessions-EntityTrigger",
+                "ErgoSOC-AU-Account-ResetPassword-EntityTrigger",
                 extra_deploy_parameters={
                     "TeamsWebhookUrl": {"value": "[parameters('TeamsWebhookUrl')]"},
                     "ClientOrganizationName": {"value": "[parameters('ClientOrganizationName')]"},
@@ -244,4 +251,4 @@ def build_template():
 
 
 if __name__ == "__main__":
-    write_template(build_template(), "azuredeploy-response-account-revoke-sessions-entity.json", HERE)
+    write_template(build_template(), "azuredeploy-response-account-reset-password-entity.json", HERE)
