@@ -141,8 +141,8 @@ testing.
 
 Open **Logic App → API connections** and authorize/save both generated connections:
 
-- `MicrosoftSentinel-Enrich-Device-IncidentComment`
-- `AzureMonitorLogs-Enrich-Device-IncidentComment`
+- `MicrosoftSentinel-ErgoSOC-AU-Device-Enrichment`
+- `AzureMonitorLogs-ErgoSOC-AU-Device-Enrichment`
 
 The Sentinel connection uses the connector's managed-identity alternative parameters. The Azure
 Monitor Logs connection uses `managedIdentityAuth`; it intentionally does not use
@@ -157,7 +157,7 @@ on the playbook resource group to the Sentinel service identity when the portal 
 
 | Parameter | Default | Notes |
 |---|---|---|
-| `PlaybookName` | `Enrich-Device-IncidentComment` | Logic App name |
+| `PlaybookName` | `ErgoSOC-AU-Device-Enrichment` | Logic App name |
 | `UserAssignedManagedIdentityResourceId` | required | full resource ID of one existing client-owned UAMI; the template never enables a system-assigned identity |
 | `WorkspaceName` | required | Sentinel workspace |
 | `WorkspaceResourceGroup` / `WorkspaceSubscriptionId` | current deployment scope | change for a cross-scope workspace |
@@ -190,6 +190,10 @@ Create a Sentinel watchlist with alias `DeviceContext`. Put the lowercase hostna
   and avoid shared-variable races.
 - A Graph permission, licensing, quota, or correlation failure does not fail the playbook. The
   Defender section explains the status and the Sentinel workspace query continues.
+- Each Host entity's comment posts individually, right inside the loop — an incident with several
+  devices gets several comments, not one shared one. That keeps every comment under Sentinel's
+  30,000-character `/Incidents/Comment` limit; if one device's own data is still unusually large,
+  that single comment truncates at 28,000 characters with a note instead of failing outright.
 - Raw Graph inputs and outputs are protected in Logic App run history. The summarized result is
   intentionally posted to the incident comment and is visible to analysts who can access the
   incident.

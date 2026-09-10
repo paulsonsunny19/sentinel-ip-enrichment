@@ -314,7 +314,7 @@ union isfuzzy=true ClientContext, Alerts, Endpoint
 
 
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap"
-TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top"
+TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;"
 TBL = "border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:12px;width:100%"
 H4 = "margin:12px 0 4px 0;font-family:Segoe UI,Arial,sans-serif;font-size:13px"
 
@@ -633,30 +633,40 @@ definition = {
                 "Compose_VerdictReason": {
                     "runAfter": after("Compose_VerdictStyle"), "type": "Compose", "inputs": VERDICT_REASON,
                 },
-                "Append_Device_block": {
-                    "runAfter": after("Compose_VerdictReason"), "type": "AppendToStringVariable",
-                    "inputs": {"name": "HtmlBody", "value": DEVICE_BLOCK},
+                # Post one comment per entity, right here inside the loop, instead of
+                # accumulating every entity's block into one shared HtmlBody and posting
+                # it once after the loop -- see build_template.py's IP playbook for the
+                # full rationale (Sentinel's /Incidents/Comment rejects any single
+                # comment over 30,000 characters, and a shared comment made that trivial
+                # to hit and failed the ENTIRE comment when it did).
+                "Compose_Entity_Comment": {
+                    "runAfter": after("Compose_VerdictReason"), "type": "Compose",
+                    "inputs": HEADER + DEVICE_BLOCK,
                 },
-            },
-        },
-        "Condition_any_host_entities": {
-            "runAfter": after("For_each_host_entity"), "type": "If",
-            "expression": {"and": [{"greater": ["@length(coalesce(body('Entities_-_Get_Hosts')?['Hosts'], json('[]')))", 0]}]},
-            "actions": {
+                "Compose_Entity_Comment_Safe": {
+                    "runAfter": after("Compose_Entity_Comment"), "type": "Compose",
+                    "inputs": (
+                        "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), "
+                        "concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), "
+                        "'<p><i>... output truncated at 28,000 characters to stay under Sentinel''s "
+                        "30,000-character comment limit; see the Logic App run history for the full "
+                        "result.</i></p>'), "
+                        "outputs('Compose_Entity_Comment'))"
+                    ),
+                },
                 "Add_comment_to_incident_V3": {
-                    "runAfter": {}, "type": "ApiConnection",
+                    "runAfter": after("Compose_Entity_Comment_Safe"), "type": "ApiConnection",
                     "inputs": {
                         "host": {"connection": {"name": SENTINEL_CONN}},
                         "method": "post",
                         "body": {
                             "incidentArmId": "@triggerBody()?['object']?['id']",
-                            "message": "<p>@{variables('HtmlBody')}</p>",
+                            "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>",
                         },
                         "path": "/Incidents/Comment",
                     },
-                }
+                },
             },
-            "else": {"actions": {}},
         },
     },
     "outputs": {},
@@ -684,7 +694,7 @@ template = {
     },
     "parameters": {
         "PlaybookName": {
-            "type": "string", "defaultValue": "Enrich-Device-IncidentComment",
+            "type": "string", "defaultValue": "ErgoSOC-AU-Device-Enrichment",
             "metadata": {"description": "Name of the Logic App playbook."},
         },
         "UserAssignedManagedIdentityResourceId": {

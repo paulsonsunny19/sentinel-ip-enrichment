@@ -1,0 +1,87 @@
+// Run in Microsoft Defender > Hunting > Advanced Hunting.
+// Supply the NetworkMessageId (and/or InternetMessageId) from the Sentinel Mail message
+// entity. This validation query mirrors the reported-email playbook's Defender sources
+// without assuming optional columns.
+let MessageIdInput = tolower('00000000-0000-0000-0000-000000000000');
+let InternetMessageIdInput = tolower('');
+let Lookback = 14d;
+union isfuzzy=true
+(
+    EmailEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeMsgId = tostring(column_ifexists('NetworkMessageId', '')),
+             SafeIntMsgId = tostring(column_ifexists('InternetMessageId', ''))
+    | where (isnotempty(MessageIdInput) and SafeMsgId == MessageIdInput)
+        or (isnotempty(InternetMessageIdInput) and SafeIntMsgId == InternetMessageIdInput)
+    | project Timestamp,
+              Source = 'Email record',
+              Detail = strcat('delivery: ', tostring(column_ifexists('DeliveryAction', '')),
+                              '/', tostring(column_ifexists('DeliveryLocation', '')),
+                              ' | threat: ', tostring(column_ifexists('ThreatTypes', '')),
+                              ' | sender: ', tostring(column_ifexists('SenderFromAddress', ''))),
+              MessageId = SafeMsgId,
+              User = tostring(column_ifexists('RecipientEmailAddress', ''))
+),
+(
+    EmailAttachmentInfo
+    | where Timestamp > ago(Lookback)
+    | extend SafeMsgId = tostring(column_ifexists('NetworkMessageId', ''))
+    | where isnotempty(MessageIdInput) and SafeMsgId == MessageIdInput
+    | project Timestamp,
+              Source = 'Attachment',
+              Detail = strcat('file: ', tostring(column_ifexists('FileName', '')),
+                              ' | sha256: ', tostring(column_ifexists('SHA256', ''))),
+              MessageId = SafeMsgId,
+              User = ''
+),
+(
+    EmailUrlInfo
+    | where Timestamp > ago(Lookback)
+    | extend SafeMsgId = tostring(column_ifexists('NetworkMessageId', ''))
+    | where isnotempty(MessageIdInput) and SafeMsgId == MessageIdInput
+    | project Timestamp,
+              Source = 'Contained URL',
+              Detail = strcat('url: ', tostring(column_ifexists('Url', ''))),
+              MessageId = SafeMsgId,
+              User = ''
+),
+(
+    UrlClickEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeMsgId = tostring(column_ifexists('NetworkMessageId', ''))
+    | where isnotempty(MessageIdInput) and SafeMsgId == MessageIdInput
+    | project Timestamp,
+              Source = 'Safe Links click',
+              Detail = strcat('clicked through: ', tostring(column_ifexists('IsClickedThrough', false)),
+                              ' | threat: ', tostring(column_ifexists('ThreatTypes', ''))),
+              MessageId = SafeMsgId,
+              User = tostring(column_ifexists('AccountUpn', ''))
+),
+(
+    EmailPostDeliveryEvents
+    | where Timestamp > ago(Lookback)
+    | extend SafeMsgId = tostring(column_ifexists('NetworkMessageId', ''))
+    | where isnotempty(MessageIdInput) and SafeMsgId == MessageIdInput
+    | project Timestamp,
+              Source = 'Post-delivery action',
+              Detail = strcat('action: ', tostring(column_ifexists('ActionType', ''))),
+              MessageId = SafeMsgId,
+              User = ''
+),
+(
+    AlertEvidence
+    | where Timestamp > ago(Lookback)
+    | extend SafeMsgId = tostring(column_ifexists('NetworkMessageId', ''))
+    | where isnotempty(MessageIdInput) and SafeMsgId == MessageIdInput
+    | project Timestamp,
+              Source = 'Alert evidence',
+              Detail = strcat('title: ', tostring(column_ifexists('Title', '')),
+                              ' | severity: ', tostring(column_ifexists('Severity', ''))),
+              MessageId = SafeMsgId,
+              User = tostring(column_ifexists('AccountUpn', ''))
+),
+(
+    datatable(Timestamp:datetime, Source:string, Detail:string, MessageId:string, User:string)[]
+)
+| order by Timestamp desc
+| take 200

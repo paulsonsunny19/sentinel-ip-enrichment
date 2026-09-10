@@ -105,7 +105,7 @@ def block(c):
 
 
 body = (f'<div style="font-family:Segoe UI,Arial,sans-serif;font-size:12px;{GREY}">'
-        "Automated IP enrichment &mdash; playbook <b>Enrich-IP-IncidentComment</b> "
+        "Automated IP enrichment &mdash; playbook <b>ErgoSOC-AU-IP-Enrichment</b> "
         "&middot; run 2026-08-31 09:12 UTC</div>") + "".join(block(c) for c in CASES)
 
 page = ("<!doctype html><html><head><meta charset='utf-8'><title>Sentinel IP enrichment comment - preview</title>"
