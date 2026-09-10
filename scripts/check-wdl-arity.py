@@ -62,22 +62,31 @@ def check_calls(s, fname, expected):
     return bad
 
 
-def find_definition(template):
-    """Handles both a standalone workflow definition (top-level 'actions')
-    and a full ARM deployment template (definition nested under
-    resources[].properties.definition)."""
+def find_definitions(template):
+    """Handles a standalone workflow definition (top-level 'actions'), a
+    single-playbook ARM deployment template (definition nested under
+    resources[].properties.definition), and a combined/bundle template
+    (resources[].properties.template is itself a nested ARM deployment,
+    recursively, one level per playbook in the bundle) -- returns every
+    workflow definition found, since a bundle template has one per
+    nested playbook."""
     if "actions" in template and "triggers" in template:
-        return template
+        return [template]
+    found = []
     for res in template.get("resources", []):
         props = res.get("properties", {})
         if "definition" in props:
-            return props["definition"]
-    raise ValueError("could not find a workflow definition in this file")
+            found.append(props["definition"])
+        if "template" in props:
+            found.extend(find_definitions(props["template"]))
+    if not found:
+        raise ValueError("could not find any workflow definition in this file")
+    return found
 
 
 def check_file(path):
     template = json.loads(open(path).read())
-    defn = find_definition(template)
+    definitions = find_definitions(template)
     issues = []
 
     def walk(obj):
@@ -92,7 +101,8 @@ def check_file(path):
             issues.extend(("equals", n, snip) for n, snip in check_calls(obj, 'equals', 2))
             issues.extend(("not", n, snip) for n, snip in check_calls(obj, 'not', 1))
 
-    walk(defn)
+    for defn in definitions:
+        walk(defn)
     return issues
 
 

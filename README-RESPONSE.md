@@ -406,3 +406,34 @@ own template). Same safety model as every other option here.
 After deploying (either way), authorise the Microsoft Sentinel API connection for each (same
 manual one-time step every playbook in this repo needs), then **do not** attach any of them to an
 automation rule unless that's a deliberate decision — see above.
+
+### Deploy all five entity-trigger playbooks in one go
+
+`azuredeploy-response-entity-trigger-all.json` bundles all five entity-trigger (Preview) playbooks
+from the section above — Account revoke-sessions, Account reset-password, Account
+revoke-app-consent, Account disable+confirm-compromised, and IP block-indicator — same
+nested-deployment pattern, same generator (`build_response_master_template.py`):
+
+```bash
+az deployment group create \
+  --name sentinel-response-entity-trigger-all \
+  --resource-group "$SENTINEL_RG" \
+  --template-file azuredeploy-response-entity-trigger-all.json \
+  --parameters UserAssignedManagedIdentityResourceId="$UAMI_ID"
+```
+
+12 master parameters: `UserAssignedManagedIdentityResourceId`, `TeamsWebhookUrl`,
+`ClientOrganizationName` (shared across all five), `PlaybookName` per playbook, `DisableAccount` /
+`ConfirmCompromised` (Account disable+confirm-compromised only), and `Action` /
+`IndicatorExpirationDays` (IP block-indicator only). None of Device Isolate/Scan, Email
+block+quarantine, FileHash block, or the URL half of Indicator Block are in this bundle — entity
+triggers don't support their entity types (Host, Mail message, FileHash, URL) yet.
+
+Same safety model, doubled down: none of these five are wired to an automation rule by this
+template, **and none of them can be** — entity-triggered playbooks aren't callable by an
+automation rule at all, a platform limitation, not a choice made here. An analyst manually running
+a playbook against a selected entity is the approval gate for every one of them.
+
+Remember the confidence caveat from the section above when you deploy this bundle: the four
+Account playbooks are confirmed against a real reference sample; the IP playbook's entity-type
+string and address field name are still best-confidence guesses, not independently verified.

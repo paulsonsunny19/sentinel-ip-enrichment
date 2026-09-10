@@ -68,6 +68,19 @@ SELECTED_SEVEN_PLAYBOOKS = [
     ("build_response_indicator_block.py", "azuredeploy-response-indicator-block.json", "deploy-indicator-block", "IndicatorBlock"),
 ]
 
+# The five entity-trigger (Preview) playbooks -- see README-RESPONSE.md's
+# "Entity-trigger variants" section. Bundled separately from the three
+# incident-trigger bundles above since they're a different trigger type
+# with a different safety/scope story (Account + IP only, no automation
+# rule support at all -- not just "not wired to one by default").
+ENTITY_TRIGGER_PLAYBOOKS = [
+    ("build_response_account_revoke_sessions_entity.py", "azuredeploy-response-account-revoke-sessions-entity.json", "deploy-account-revoke-sessions-entity", "AccountRevokeSessionsEntity"),
+    ("build_response_account_reset_password_entity.py", "azuredeploy-response-account-reset-password-entity.json", "deploy-account-reset-password-entity", "AccountResetPasswordEntity"),
+    ("build_response_account_revoke_consent_entity.py", "azuredeploy-response-account-revoke-consent-entity.json", "deploy-account-revoke-consent-entity", "AccountRevokeConsentEntity"),
+    ("build_response_account_disable_entity.py", "azuredeploy-response-account-disable-entity.json", "deploy-account-disable-entity", "AccountDisableEntity"),
+    ("build_response_indicator_block_ip_entity.py", "azuredeploy-response-indicator-block-ip-entity.json", "deploy-indicator-block-ip-entity", "IndicatorBlockIpEntity"),
+]
+
 SHARED_PARAM_MAP = {
     "UserAssignedManagedIdentityResourceId": "UserAssignedManagedIdentityResourceId",
     "TeamsWebhookUrl": "TeamsWebhookUrl",
@@ -92,6 +105,9 @@ MERGE_PARAMS = {
 
 def regenerate_all():
     for script, _, _, _ in ALL_PLAYBOOKS:
+        print(f"==> Regenerating {script} ...")
+        subprocess.run([sys.executable, str(HERE / script)], check=True, cwd=HERE)
+    for script, _, _, _ in ENTITY_TRIGGER_PLAYBOOKS:
         print(f"==> Regenerating {script} ...")
         subprocess.run([sys.executable, str(HERE / script)], check=True, cwd=HERE)
 
@@ -313,4 +329,40 @@ build(
     ["Account", "Host", "FileHash", "IP", "URL"],
     ["Response", "Account", "Device", "FileHash", "IP", "URL", "Bundle"],
     "seven",
+)
+
+build(
+    ENTITY_TRIGGER_PLAYBOOKS,
+    "azuredeploy-response-entity-trigger-all.json",
+    "Deploy all five ErgoSOC-AU entity-trigger (Preview) response playbooks in one deployment",
+    (
+        "Deploys all five entity-trigger (Preview) response playbooks as "
+        "nested deployments, all bound to the same client-owned "
+        "user-assigned managed identity: Account revoke-sessions, Account "
+        "reset-password, Account revoke-app-consent, Account "
+        "disable+confirm-compromised, and IP block-indicator. Each is run "
+        "manually by selecting a single entity inside an incident's overview "
+        "blade (or from Hunting), then Actions -> Run playbook -- not from "
+        "the incident's own Actions menu, and not attachable to a Sentinel "
+        "automation rule at all (a real platform limitation of this trigger "
+        "type, unlike the incident-trigger playbooks which simply aren't "
+        "wired to one by default). Entity triggers currently support only "
+        "Account and IP entities, which is why Device and Email/FileHash/URL "
+        "have no entity-trigger variant here. PlaybookName is exposed per "
+        "playbook since each Logic App needs a distinct name; "
+        "TeamsWebhookUrl and ClientOrganizationName are merged into one "
+        "shared parameter each, applied to all five. CONFIDENCE NOTE: the "
+        "four Account playbooks' trigger shape is confirmed against a real, "
+        "complete reference sample; the IP playbook's entity-type string "
+        "and address field name are best-confidence guesses by analogy, not "
+        "independently verified -- see README-RESPONSE.md's 'Entity-trigger "
+        "variants' section and that playbook's own module docstring. SAFETY: "
+        "none of the five are wired to a Sentinel automation rule by this "
+        "template (and none of them can be, for this trigger type) -- an "
+        "analyst manually running a playbook against a selected entity is "
+        "the approval gate for every one of them."
+    ),
+    ["Account", "IP"],
+    ["Response", "Account", "IP", "Entity Trigger", "Bundle"],
+    "five",
 )
