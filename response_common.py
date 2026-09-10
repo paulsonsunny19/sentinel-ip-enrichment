@@ -65,51 +65,61 @@ INDICATOR_EXPIRATION_EXPR = (
 # incident trigger every other playbook in this repo uses. Run manually by
 # selecting a single entity inside an incident's overview blade, not by an
 # automation rule (entity-triggered playbooks can't be called by one -- a
-# real platform limitation, not a choice made here). Confirmed against a
-# real, working Account-entity playbook built in the Portal (Code view +
-# dynamic-content picker) this session:
-#   - path stays generic ("/entity/@{encodeURIComponent('')}") -- Sentinel
-#     appears to filter which playbooks show up for a given entity type
-#     using the ARM template's own "entities" metadata tag, not anything
-#     baked into the trigger's runtime path.
-#   - triggerBody() is NOT incident-shaped the way the incident trigger's
-#     is -- nothing in the verified example referenced triggerBody() at
-#     all. "Entities - Get <type>" needs no body input for this trigger
-#     (contrast the incident trigger, which must pass
-#     triggerBody()?['object']?['properties']?['relatedEntities']).
-#   - Incident linkage comes from a distinct trigger output surfaced in
-#     the Designer's dynamic-content picker as "Incident ARM ID
-#     (Optional)" -- optional because it's empty when the playbook was
-#     run from a context with no incident (e.g. Hunting). The literal
-#     JSON field name/casing (INCIDENT_ARM_ID_EXPR below) is this
-#     session's best-confidence read, not independently re-verified --
-#     confirm it against a real run before relying on it, same as every
-#     other new-API integration in this repo.
-ENTITY_TRIGGER = {
-    "Microsoft_Sentinel_entity": {
-        "type": "ApiConnectionWebhook",
-        "inputs": {
-            "host": {"connection": {"name": SENTINEL_CONN}},
-            "body": {"callback_url": "@listCallbackUrl()"},
-            "path": "/entity/@{encodeURIComponent('')}",
-        },
+# real platform limitation, not a choice made here).
+#
+# Verified against two real sources this session: a live Account-entity
+# playbook built in the Portal (Code view + dynamic-content picker), and a
+# complete reference sample (a "Reset-AADUserPassword-EntityTrigger"
+# template) that corrected two guesses the live-build evidence alone had
+# left wrong:
+#   - The entity TYPE is baked into the trigger path itself --
+#     "/entity/@{encodeURIComponent('Account')}" for an Account entity --
+#     not left generic. The live-build example's empty path
+#     ("/entity/@{encodeURIComponent('')}") was simply an unfinished
+#     trigger configuration, not evidence the path stays generic.
+#   - The entity's own data is read directly off
+#     triggerBody()?['Entity']?['properties']?[...] -- no "Entities - Get
+#     <type>" connector action needed at all (contrast the incident
+#     trigger, which needs that action with
+#     triggerBody()?['object']?['properties']?['relatedEntities'] as its
+#     body). This also sidesteps a real blocker: the entity-trigger
+#     flavor of "Entities - Get Accounts" has its own required "Entities
+#     list" input with no confirmed value to supply.
+#   - An entity trigger fires for exactly one entity, not an array -- no
+#     Foreach loop needed, unlike every incident-trigger playbook in this
+#     repo.
+def entity_trigger(entity_type):
+    return {
+        "Microsoft_Sentinel_entity": {
+            "type": "ApiConnectionWebhook",
+            "inputs": {
+                "host": {"connection": {"name": SENTINEL_CONN}},
+                "body": {"callback_url": "@{listCallbackUrl()}"},
+                "path": f"/entity/@{{encodeURIComponent('{entity_type}')}}",
+            },
+        }
     }
-}
 
-# Best-confidence field name for the entity trigger's "Incident ARM ID
-# (Optional)" dynamic-content token -- see ENTITY_TRIGGER's comment above
-# for the confidence caveat. Empty string when the playbook was run
-# without an associated incident.
+
+# Field name/casing confirmed against the reference sample above:
+# "IncidentArmID" (capital ID), read off triggerBody() directly -- not
+# "IncidentArmId" as the live-build dynamic-content label alone had
+# suggested (labels are human-friendly, not literal field names). Empty
+# when the playbook was run without an associated incident (e.g. from
+# Hunting).
 #
 # Two forms, same expression: INCIDENT_ARM_ID_EXPR (with its leading '@')
 # for use as an entire top-level field value (e.g. "incidentArmId": ...,
-# or as a whole element of an "equals" array) or an entire
-# "expression" string; INCIDENT_ARM_ID_EXPR_RAW (no leading '@') for
-# embedding inside a compound expression that's already inside its own
-# '@{...}' wrapper or its own leading '@' -- a nested '@' there is invalid
-# WDL syntax.
-INCIDENT_ARM_ID_EXPR_RAW = "triggerBody()?['IncidentArmId']"
+# or as a whole element of an "equals" array) or an entire "expression"
+# string; INCIDENT_ARM_ID_EXPR_RAW (no leading '@') for embedding inside a
+# compound expression that's already inside its own '@{...}' wrapper or
+# its own leading '@' -- a nested '@' there is invalid WDL syntax.
+INCIDENT_ARM_ID_EXPR_RAW = "triggerBody()?['IncidentArmID']"
 INCIDENT_ARM_ID_EXPR = f"@{INCIDENT_ARM_ID_EXPR_RAW}"
+
+# The entity itself, off the entity trigger's own triggerBody() -- no
+# "Entities - Get <type>" action needed. See entity_trigger()'s comment.
+ENTITY_PROPERTY_EXPR_RAW = "triggerBody()?['Entity']?['properties']"
 
 TD = "padding:4px 10px;border:1px solid #e1dfdd;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;"
 TH = "text-align:left;padding:4px 10px;background:#f3f2f1;border:1px solid #e1dfdd;font-weight:600;white-space:nowrap;"

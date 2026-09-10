@@ -6,21 +6,34 @@ account-revoke-sessions.json), but on Microsoft Sentinel's "entity" trigger
 (Preview) instead of the incident trigger every other playbook in this repo
 uses. Run manually by selecting a single Account entity inside an incident's
 overview blade -- Actions -> Run playbook -- rather than from the incident's
-own Actions menu. See response_common.py's ENTITY_TRIGGER/INCIDENT_ARM_ID_EXPR
-comments for exactly what's been verified about this trigger and what's
-still a best-confidence guess (the "Incident ARM ID" field's literal casing).
+own Actions menu. See response_common.py's entity_trigger()/
+INCIDENT_ARM_ID_EXPR/ENTITY_PROPERTY_EXPR_RAW comments for exactly what's
+been verified about this trigger (now confirmed against a complete reference
+sample, not just a live partial build -- see that module for the full
+history of what changed and why).
+
+No "Entities - Get Accounts" action and no Foreach loop here, unlike the
+first cut of this file: an entity trigger fires for exactly one entity, and
+that entity's data is read directly off
+triggerBody()?['Entity']?['properties']?[...] -- confirmed against a
+complete reference sample playbook. The earlier version's
+"Entities - Get Accounts" action turned out to need a required "Entities
+list" input with no supplied value, which is why it never actually worked
+when deployed and run.
 
 Real platform limitation, not a choice made here: entity-triggered playbooks
 CANNOT be called by a Sentinel automation rule (different trigger schema).
 Irrelevant for this repo's response playbooks specifically, since none of
 them are wired to automation rules anyway -- see README-RESPONSE.md.
 
-First-cut simplification versus the incident-trigger version: the Teams
-notification card here omits Ticket/Severity/Incident owner, since none of
-those are available from triggerBody() on an entity trigger without an
-extra "get incident" API call this first version deliberately doesn't add
-yet (keeping the new-and-unverified surface area to just the one field
-above). Add it back once the core mechanism is confirmed working.
+The Teams notification card here still omits Ticket/Severity/Incident
+owner (unlike the incident-trigger version's shared teams_notify_actions()
+helper): those fields live under triggerBody()?['object']?['properties']?[...]
+on the incident trigger, which the entity trigger's triggerBody() does not
+carry -- getting them here would need an extra "get incident" API call this
+playbook doesn't make. The card instead shows the playbook name, the
+account acted on, the result, and the Incident ARM ID (blank when run
+without an incident, e.g. from Hunting).
 
 Requires the same Microsoft Graph application permission as the incident-
 trigger version: User.ReadWrite.All (covers revokeSignInSessions) on the
@@ -29,7 +42,7 @@ UAMI, plus Microsoft Sentinel Responder for the connector itself.
 import pathlib
 
 from response_common import (
-    ENTITY_TRIGGER,
+    ENTITY_PROPERTY_EXPR_RAW,
     GRAPH_AUTH,
     INCIDENT_ARM_ID_EXPR,
     INCIDENT_ARM_ID_EXPR_RAW,
@@ -39,6 +52,7 @@ from response_common import (
     after,
     base_outputs,
     base_parameters,
+    entity_trigger,
     http_call,
     result_expr,
     sentinel_connection_resource,
@@ -75,196 +89,172 @@ def build_definition():
             "TeamsWebhookUrl": {"type": "SecureString", "defaultValue": ""},
             "ClientOrganizationName": {"type": "String", "defaultValue": ""},
         },
-        "triggers": ENTITY_TRIGGER,
+        "triggers": entity_trigger("Account"),
         "actions": {
-            "Entities_-_Get_Accounts": {
-                "runAfter": {}, "type": "ApiConnection",
-                "inputs": {
-                    "host": {"connection": {"name": SENTINEL_CONN}},
-                    "method": "post",
-                    "path": "/entities/account",
-                },
+            "Compose_AadUserId": {
+                "runAfter": {}, "type": "Compose",
+                "inputs": (
+                    f"@trim(string(coalesce({ENTITY_PROPERTY_EXPR_RAW}?['AadUserId'], "
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['aadUserId'], "
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['ObjectGuid'], "
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['objectGuid'], '')))"
+                ),
             },
-            "For_each_Account_entity": {
-                "foreach": "@coalesce(body('Entities_-_Get_Accounts')?['Accounts'], json('[]'))",
-                "runAfter": after("Entities_-_Get_Accounts"),
-                "type": "Foreach",
-                "runtimeConfiguration": {"concurrency": {"repetitions": 1}},
+            "Compose_UPN": {
+                "runAfter": after("Compose_AadUserId"), "type": "Compose",
+                "inputs": (
+                    "@toLower(trim(string(coalesce("
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['UserPrincipalName'], "
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['userPrincipalName'], "
+                    f"if(and(not(equals({ENTITY_PROPERTY_EXPR_RAW}?['AccountName'], null)), "
+                    f"not(equals({ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'], null))), "
+                    f"concat({ENTITY_PROPERTY_EXPR_RAW}?['AccountName'], '@', {ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix']), "
+                    # 'Name' confirmed as a real field on this trigger's account entity shape
+                    # (differs from the incident trigger's 'AccountName') -- kept as a further
+                    # fallback rather than assumed primary, since 'AccountName' may also work.
+                    f"if(and(not(equals({ENTITY_PROPERTY_EXPR_RAW}?['Name'], null)), "
+                    f"not(equals({ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix'], null))), "
+                    f"concat({ENTITY_PROPERTY_EXPR_RAW}?['Name'], '@', {ENTITY_PROPERTY_EXPR_RAW}?['UPNSuffix']), ''), "
+                    "''), "
+                    "''))))"
+                ),
+            },
+            "Compose_Display_Name_Entity": {
+                "runAfter": after("Compose_UPN"), "type": "Compose",
+                "inputs": (
+                    f"@trim(string(coalesce({ENTITY_PROPERTY_EXPR_RAW}?['DisplayName'], "
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['displayName'], "
+                    f"{ENTITY_PROPERTY_EXPR_RAW}?['Name'], '(no display name)')))"
+                ),
+            },
+            "Compose_User_Ref": {
+                "runAfter": after("Compose_Display_Name_Entity"), "type": "Compose",
+                "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), outputs('Compose_UPN'))",
+            },
+            "Condition_Resolve_ObjectId": {
+                "runAfter": after("Compose_User_Ref"), "type": "If",
+                "expression": {
+                    "and": [
+                        {"equals": ["@outputs('Compose_AadUserId')", ""]},
+                        {"not": {"equals": ["@outputs('Compose_UPN')", ""]}},
+                    ]
+                },
                 "actions": {
-                    "Reset_RevokeResult": {
-                        "runAfter": {}, "type": "SetVariable",
-                        "inputs": {"name": "RevokeResult", "value": "skipped - could not resolve Entra object ID for this entity"},
-                    },
-                    "Reset_ResolvedObjectId": {
-                        "runAfter": after("Reset_RevokeResult"), "type": "SetVariable",
-                        "inputs": {"name": "ResolvedObjectId", "value": ""},
-                    },
-                    "Compose_AadUserId": {
-                        "runAfter": after("Reset_ResolvedObjectId"), "type": "Compose",
-                        "inputs": (
-                            "@trim(string(coalesce(items('For_each_Account_entity')?['AadUserId'], "
-                            "items('For_each_Account_entity')?['aadUserId'], "
-                            "items('For_each_Account_entity')?['ObjectGuid'], "
-                            "items('For_each_Account_entity')?['objectGuid'], '')))"
-                        ),
-                    },
-                    "Compose_UPN": {
-                        "runAfter": after("Compose_AadUserId"), "type": "Compose",
-                        "inputs": (
-                            "@toLower(trim(string(coalesce("
-                            "items('For_each_Account_entity')?['UserPrincipalName'], "
-                            "items('For_each_Account_entity')?['userPrincipalName'], "
-                            "if(and(not(equals(items('For_each_Account_entity')?['AccountName'], null)), "
-                            "not(equals(items('For_each_Account_entity')?['UPNSuffix'], null))), "
-                            "concat(items('For_each_Account_entity')?['AccountName'], '@', items('For_each_Account_entity')?['UPNSuffix']), "
-                            # 'Name' confirmed as a real field on this trigger's account entity shape
-                            # (differs from the incident trigger's 'AccountName') -- kept as a further
-                            # fallback rather than assumed primary, since 'AccountName' may also work.
-                            "if(and(not(equals(items('For_each_Account_entity')?['Name'], null)), "
-                            "not(equals(items('For_each_Account_entity')?['UPNSuffix'], null))), "
-                            "concat(items('For_each_Account_entity')?['Name'], '@', items('For_each_Account_entity')?['UPNSuffix']), ''), "
-                            "''), "
-                            "''))))"
-                        ),
-                    },
-                    "Compose_Display_Name_Entity": {
-                        "runAfter": after("Compose_UPN"), "type": "Compose",
-                        "inputs": (
-                            "@trim(string(coalesce(items('For_each_Account_entity')?['DisplayName'], "
-                            "items('For_each_Account_entity')?['displayName'], "
-                            "items('For_each_Account_entity')?['Name'], '(no display name)')))"
-                        ),
-                    },
-                    "Compose_User_Ref": {
-                        "runAfter": after("Compose_Display_Name_Entity"), "type": "Compose",
-                        "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), outputs('Compose_UPN'))",
-                    },
-                    "Condition_Resolve_ObjectId": {
-                        "runAfter": after("Compose_User_Ref"), "type": "If",
-                        "expression": {
-                            "and": [
-                                {"equals": ["@outputs('Compose_AadUserId')", ""]},
-                                {"not": {"equals": ["@outputs('Compose_UPN')", ""]}},
-                            ]
-                        },
-                        "actions": {
-                            "HTTP_Resolve_User_Id": http_call(
-                                "@{concat('https://graph.microsoft.com/v1.0/users/', "
-                                "uriComponent(outputs('Compose_UPN')), '?$select=id')}",
-                                method="GET", auth=GRAPH_AUTH,
+                    "HTTP_Resolve_User_Id": http_call(
+                        "@{concat('https://graph.microsoft.com/v1.0/users/', "
+                        "uriComponent(outputs('Compose_UPN')), '?$select=id')}",
+                        method="GET", auth=GRAPH_AUTH,
+                    ),
+                    "Set_ResolvedObjectId": {
+                        "runAfter": after("HTTP_Resolve_User_Id", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                        "type": "SetVariable",
+                        "inputs": {
+                            "name": "ResolvedObjectId",
+                            "value": (
+                                "@if(equals(outputs('HTTP_Resolve_User_Id')?['statusCode'], 200), "
+                                "string(coalesce(body('HTTP_Resolve_User_Id')?['id'], '')), '')"
                             ),
-                            "Set_ResolvedObjectId": {
-                                "runAfter": after("HTTP_Resolve_User_Id", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
-                                "type": "SetVariable",
-                                "inputs": {
-                                    "name": "ResolvedObjectId",
-                                    "value": (
-                                        "@if(equals(outputs('HTTP_Resolve_User_Id')?['statusCode'], 200), "
-                                        "string(coalesce(body('HTTP_Resolve_User_Id')?['id'], '')), '')"
-                                    ),
-                                },
-                            },
                         },
-                        "else": {"actions": {}},
                     },
-                    "Compose_Effective_Object_Id": {
-                        "runAfter": after("Condition_Resolve_ObjectId"), "type": "Compose",
-                        "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), variables('ResolvedObjectId'))",
+                },
+                "else": {"actions": {}},
+            },
+            "Compose_Effective_Object_Id": {
+                "runAfter": after("Condition_Resolve_ObjectId"), "type": "Compose",
+                "inputs": "@if(not(equals(outputs('Compose_AadUserId'), '')), outputs('Compose_AadUserId'), variables('ResolvedObjectId'))",
+            },
+            "Condition_Has_Object_Id": {
+                "runAfter": after("Compose_Effective_Object_Id"), "type": "If",
+                "expression": {"not": {"equals": ["@outputs('Compose_Effective_Object_Id')", ""]}},
+                "actions": {
+                    "HTTP_RevokeSessions": http_call(
+                        "@{concat('https://graph.microsoft.com/v1.0/users/', "
+                        "uriComponent(outputs('Compose_Effective_Object_Id')), '/revokeSignInSessions')}",
+                        method="POST", auth=GRAPH_AUTH, body={},
+                    ),
+                    "Set_RevokeResult": {
+                        "runAfter": after("HTTP_RevokeSessions", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
+                        "type": "SetVariable",
+                        "inputs": {"name": "RevokeResult", "value": result_expr("HTTP_RevokeSessions", [200])},
                     },
-                    "Condition_Has_Object_Id": {
-                        "runAfter": after("Compose_Effective_Object_Id"), "type": "If",
-                        "expression": {"not": {"equals": ["@outputs('Compose_Effective_Object_Id')", ""]}},
-                        "actions": {
-                            "HTTP_RevokeSessions": http_call(
-                                "@{concat('https://graph.microsoft.com/v1.0/users/', "
-                                "uriComponent(outputs('Compose_Effective_Object_Id')), '/revokeSignInSessions')}",
-                                method="POST", auth=GRAPH_AUTH, body={},
-                            ),
-                            "Set_RevokeResult": {
-                                "runAfter": after("HTTP_RevokeSessions", states=("Succeeded", "Failed", "Skipped", "TimedOut")),
-                                "type": "SetVariable",
-                                "inputs": {"name": "RevokeResult", "value": result_expr("HTTP_RevokeSessions", [200])},
+                },
+                "else": {"actions": {}},
+            },
+            "Compose_Entity_Comment": {
+                "runAfter": after("Condition_Has_Object_Id"), "type": "Compose",
+                "inputs": HEADER + ACCOUNT_ROW,
+            },
+            "Compose_Entity_Comment_Safe": {
+                "runAfter": after("Compose_Entity_Comment"), "type": "Compose",
+                "inputs": (
+                    "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), "
+                    "concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), "
+                    "'<p><i>... output truncated at 28,000 characters to stay under Sentinel''s "
+                    "30,000-character comment limit; see the Logic App run history for the full "
+                    "result.</i></p>'), "
+                    "outputs('Compose_Entity_Comment'))"
+                ),
+            },
+            "Condition_Has_Incident": {
+                "runAfter": after("Compose_Entity_Comment_Safe"), "type": "If",
+                "expression": {"not": {"equals": [INCIDENT_ARM_ID_EXPR, ""]}},
+                "actions": {
+                    "Add_comment_to_incident_V3": {
+                        "runAfter": {}, "type": "ApiConnection",
+                        "inputs": {
+                            "host": {"connection": {"name": SENTINEL_CONN}},
+                            "method": "post",
+                            "body": {
+                                "incidentArmId": INCIDENT_ARM_ID_EXPR,
+                                "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>",
                             },
+                            "path": "/Incidents/Comment",
                         },
-                        "else": {"actions": {}},
                     },
-                    "Compose_Entity_Comment": {
-                        "runAfter": after("Condition_Has_Object_Id"), "type": "Compose",
-                        "inputs": HEADER + ACCOUNT_ROW,
-                    },
-                    "Compose_Entity_Comment_Safe": {
-                        "runAfter": after("Compose_Entity_Comment"), "type": "Compose",
-                        "inputs": (
-                            "@if(greater(length(outputs('Compose_Entity_Comment')), 28000), "
-                            "concat(substring(outputs('Compose_Entity_Comment'), 0, 28000), "
-                            "'<p><i>... output truncated at 28,000 characters to stay under Sentinel''s "
-                            "30,000-character comment limit; see the Logic App run history for the full "
-                            "result.</i></p>'), "
-                            "outputs('Compose_Entity_Comment'))"
-                        ),
-                    },
-                    "Condition_Has_Incident": {
-                        "runAfter": after("Compose_Entity_Comment_Safe"), "type": "If",
-                        "expression": {"not": {"equals": [INCIDENT_ARM_ID_EXPR, ""]}},
-                        "actions": {
-                            "Add_comment_to_incident_V3": {
-                                "runAfter": {}, "type": "ApiConnection",
-                                "inputs": {
-                                    "host": {"connection": {"name": SENTINEL_CONN}},
-                                    "method": "post",
-                                    "body": {
-                                        "incidentArmId": INCIDENT_ARM_ID_EXPR,
-                                        "message": "<p>@{outputs('Compose_Entity_Comment_Safe')}</p>",
-                                    },
-                                    "path": "/Incidents/Comment",
-                                },
-                            },
-                        },
-                        "else": {"actions": {}},
-                    },
-                    "Condition_TeamsNotify": {
-                        "runAfter": after("Condition_Has_Incident"), "type": "If",
-                        "expression": {"not": {"equals": ["@parameters('TeamsWebhookUrl')", ""]}},
-                        "actions": {
-                            "HTTP_TeamsNotify": http_call(
-                                "@{parameters('TeamsWebhookUrl')}",
-                                method="POST", auth=None,
-                                body={
-                                    "type": "AdaptiveCard",
-                                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                                    "version": "1.4",
-                                    "body": [
+                },
+                "else": {"actions": {}},
+            },
+            "Condition_TeamsNotify": {
+                "runAfter": after("Condition_Has_Incident"), "type": "If",
+                "expression": {"not": {"equals": ["@parameters('TeamsWebhookUrl')", ""]}},
+                "actions": {
+                    "HTTP_TeamsNotify": http_call(
+                        "@{parameters('TeamsWebhookUrl')}",
+                        method="POST", auth=None,
+                        body={
+                            "type": "AdaptiveCard",
+                            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                            "version": "1.4",
+                            "body": [
+                                {
+                                    "type": "Container",
+                                    "items": [
                                         {
-                                            "type": "Container",
-                                            "items": [
-                                                {
-                                                    "type": "TextBlock",
-                                                    "text": "🛡️ ErgoSOC-AU response playbook run (entity trigger)",
-                                                    "weight": "Bolder", "size": "Medium", "wrap": True,
-                                                },
-                                                {
-                                                    "type": "TextBlock",
-                                                    "text": "@{if(equals(parameters('ClientOrganizationName'), ''), 'Client: (not set)', concat('Client: ', parameters('ClientOrganizationName')))}",
-                                                    "isSubtle": True, "wrap": True,
-                                                },
-                                            ],
+                                            "type": "TextBlock",
+                                            "text": "🛡️ ErgoSOC-AU response playbook run (entity trigger)",
+                                            "weight": "Bolder", "size": "Medium", "wrap": True,
                                         },
                                         {
-                                            "type": "FactSet",
-                                            "facts": [
-                                                {"title": "Playbook", "value": "@{workflow().name}"},
-                                                {"title": "Account", "value": "@{outputs('Compose_User_Ref')}"},
-                                                {"title": "Revoke sessions", "value": "@{variables('RevokeResult')}"},
-                                                {"title": "Incident ARM ID", "value": f"@{{if(equals({INCIDENT_ARM_ID_EXPR_RAW}, ''), '(none -- not run from an incident)', {INCIDENT_ARM_ID_EXPR_RAW})}}"},
-                                            ],
+                                            "type": "TextBlock",
+                                            "text": "@{if(equals(parameters('ClientOrganizationName'), ''), 'Client: (not set)', concat('Client: ', parameters('ClientOrganizationName')))}",
+                                            "isSubtle": True, "wrap": True,
                                         },
                                     ],
                                 },
-                            ),
+                                {
+                                    "type": "FactSet",
+                                    "facts": [
+                                        {"title": "Playbook", "value": "@{workflow().name}"},
+                                        {"title": "Account", "value": "@{outputs('Compose_User_Ref')}"},
+                                        {"title": "Revoke sessions", "value": "@{variables('RevokeResult')}"},
+                                        {"title": "Incident ARM ID", "value": f"@{{if(equals({INCIDENT_ARM_ID_EXPR_RAW}, ''), '(none -- not run from an incident)', {INCIDENT_ARM_ID_EXPR_RAW})}}"},
+                                    ],
+                                },
+                            ],
                         },
-                        "else": {"actions": {}},
-                    },
+                    ),
                 },
+                "else": {"actions": {}},
             },
         },
         "outputs": {},
@@ -284,7 +274,7 @@ def build_template():
         },
     }
     definition["actions"] = {**inits, **definition["actions"]}
-    definition["actions"]["Entities_-_Get_Accounts"]["runAfter"] = after("Init_ResolvedObjectId")
+    definition["actions"]["Compose_AadUserId"]["runAfter"] = after("Init_ResolvedObjectId")
 
     template = {
         "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
@@ -299,7 +289,7 @@ def build_template():
                 "Authorise the Microsoft Sentinel API connection.",
                 "This playbook uses the entity trigger -- it will not appear as an option for Sentinel automation rules, and must be run manually by selecting an Account entity and choosing Run playbook.",
             ],
-            "lastUpdateTime": "2026-09-09",
+            "lastUpdateTime": "2026-09-10",
             "entities": ["Account"],
             "tags": ["Response", "Account", "Entra ID", "Containment", "Entity Trigger"],
             "support": {"tier": "community"},
